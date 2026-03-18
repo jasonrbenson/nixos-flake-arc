@@ -91,6 +91,8 @@ let
       pkgs.libgcc.lib
       # libstdc++.so.6 needed by gc_linux_service and gc_worker
       pkgs.stdenv.cc.cc.lib
+      # libpam.so.0 needed by GC components
+      pkgs.linux-pam
     ];
 
     extraBuildCommands = ''
