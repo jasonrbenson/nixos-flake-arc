@@ -61,8 +61,19 @@ in
       default = null;
       description = ''
         Path to a file containing the service principal client secret.
-        The file should contain only the secret value.
-        Consider using sops-nix or agenix for secret management.
+        The file should contain only the secret value, with no trailing newline.
+
+        Recommended: use sops-nix or agenix to manage this secret.
+
+        With sops-nix:
+          sops.secrets.arc-sp-secret = { };
+          services.azure-arc.servicePrincipalSecretFile =
+            config.sops.secrets.arc-sp-secret.path;
+
+        With agenix:
+          age.secrets.arc-sp-secret.file = ./secrets/arc-sp-secret.age;
+          services.azure-arc.servicePrincipalSecretFile =
+            config.age.secrets.arc-sp-secret.path;
       '';
     };
 
@@ -137,18 +148,14 @@ in
       description = "Azure Arc Proxy Service";
     };
 
-    # State directories
-    # State directories — using root ownership for PoC simplicity.
-    # The real DEB postinst uses himds:himds, but azcmagent connect (run as
-    # root) creates root-owned files that himds can't modify. Running
-    # services as root for now avoids permission issues; proper user
-    # separation is a Phase 4 hardening task.
+    # State directories — himds-owned for the core agent, root for GC/extensions.
+    # The ExecStartPre in himdsd fixes ownership after azcmagent connect (root).
     systemd.tmpfiles.rules = [
-      "d /var/opt/azcmagent 0755 root root -"
-      "d /var/opt/azcmagent/certs 0755 root root -"
-      "d /var/opt/azcmagent/log 0755 root root -"
-      "d /var/opt/azcmagent/socks 0755 root root -"
-      "d /var/opt/azcmagent/tokens 0755 root root -"
+      "d /var/opt/azcmagent 0755 himds himds -"
+      "d /var/opt/azcmagent/certs 0750 himds himds -"
+      "d /var/opt/azcmagent/log 0755 himds himds -"
+      "d /var/opt/azcmagent/socks 0750 himds himds -"
+      "d /var/opt/azcmagent/tokens 0750 root root -"
       "d /var/lib/GuestConfig 0700 root root -"
       "d /var/lib/waagent 0700 root root -"
 
@@ -204,7 +211,7 @@ in
     systemd.services.himdsd = {
       description = "Azure Connected Machine Agent Service";
       wantedBy = [ "multi-user.target" ];
-      after = [ "network-online.target" ];
+      after = [ "network-online.target" "azure-arc-init.service" ];
       wants = [ "network-online.target" ];
 
       environment = {
@@ -218,18 +225,32 @@ in
 
       serviceConfig = {
         Type = "simple";
+
+        # Fix ownership after azcmagent connect (which runs as root).
+        # This ensures himds can read config files and write logs.
+        ExecStartPre = let
+          fixPerms = pkgs.writeShellScript "fix-arc-perms" ''
+            chown -R himds:himds /var/opt/azcmagent/certs /var/opt/azcmagent/log /var/opt/azcmagent/socks 2>/dev/null || true
+            # agentconfig.json and other config files in the state dir
+            find /var/opt/azcmagent -maxdepth 1 -type f -exec chown himds:himds {} + 2>/dev/null || true
+          '';
+        in "+${fixPerms}";
         ExecStart = "${cfg.package}/bin/azcmagent-fhs /opt/azcmagent/bin/himds";
         TimeoutStartSec = 5;
         Restart = "on-failure";
         RestartSec = "5s";
 
-        # PoC: running as root to avoid permission conflicts between
-        # azcmagent connect (root) and himds service. Phase 4 will
-        # restore User=himds with proper ownership setup.
+        User = "himds";
+        Group = "himds";
 
-        # Note: bwrap (used by buildFHSEnv) requires mount + user namespaces,
-        # so we cannot use RestrictNamespaces or ProtectSystem here.
-        PrivateTmp = false;
+        # Systemd hardening — compatible with bwrap namespaces
+        NoNewPrivileges = false; # bwrap needs to create namespaces
+        ProtectKernelTunables = true;
+        ProtectKernelModules = true;
+        ProtectControlGroups = true;
+        RestrictRealtime = true;
+        LockPersonality = true;
+        MemoryDenyWriteExecute = false; # .NET JIT in GC components needs W+X
       };
     };
 
@@ -248,15 +269,26 @@ in
         Restart = "on-failure";
         RestartSec = "5s";
 
-        PrivateTmp = false;
+        User = "arcproxy";
+        Group = "himds";
+
+        # Systemd hardening
+        NoNewPrivileges = false;
+        ProtectKernelTunables = true;
+        ProtectKernelModules = true;
+        ProtectControlGroups = true;
+        RestrictRealtime = true;
+        LockPersonality = true;
+        MemoryDenyWriteExecute = false;
       };
     };
 
     # --- Guest Configuration Agent Service ---
+    # Runs as root: manages policy compliance, writes to /var/lib/GuestConfig
     systemd.services.gcad = mkIf cfg.guestConfiguration.enable {
       description = "GC Arc Service";
       wantedBy = [ "multi-user.target" ];
-      after = [ "network.target" ];
+      after = [ "network.target" "azure-arc-init.service" ];
 
       environment = {
         HOME = "/var/lib/GuestConfig";
@@ -271,14 +303,23 @@ in
         RestartSec = "10s";
         TimeoutStopSec = 600;
         CPUQuota = "5%";
+
+        # Systemd hardening
+        ProtectKernelTunables = true;
+        ProtectKernelModules = true;
+        ProtectControlGroups = true;
+        RestrictRealtime = true;
+        LockPersonality = true;
+        MemoryDenyWriteExecute = false;
       };
     };
 
     # --- Extension Manager Service ---
+    # Runs as root: downloads/installs extensions, writes to /var/lib/waagent
     systemd.services.extd = mkIf cfg.extensions.enable {
       description = "Extension Service";
       wantedBy = [ "multi-user.target" "himdsd.service" ];
-      after = [ "network.target" "himdsd.service" ];
+      after = [ "network.target" "himdsd.service" "azure-arc-init.service" ];
       requires = [ "himdsd.service" ];
 
       environment = {
@@ -294,6 +335,14 @@ in
         TimeoutStopSec = 600;
         CPUQuota = "5%";
         KillMode = "process";
+
+        # Systemd hardening
+        ProtectKernelTunables = true;
+        ProtectKernelModules = true;
+        ProtectControlGroups = true;
+        RestrictRealtime = true;
+        LockPersonality = true;
+        MemoryDenyWriteExecute = false;
       };
     };
 

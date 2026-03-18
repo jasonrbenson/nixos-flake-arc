@@ -117,6 +117,7 @@ nix flake check
 
 ## Documentation
 
+- **[Production Deployment Guide](docs/production-guide.md)** — End-to-end setup for NixOS admins and Azure engineers
 - [Architecture](docs/architecture.md) — Technical design of the FHS sandbox approach
 - [Gaps and Findings](docs/gaps-and-findings.md) — Current gaps, root causes, and recommendations
 - [Extension Compatibility](docs/extension-compat.md) — Extension testing matrix
