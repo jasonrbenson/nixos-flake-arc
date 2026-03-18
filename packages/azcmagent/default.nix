@@ -116,6 +116,12 @@ let
       # read-write, and systemd.tmpfiles.rules (in the NixOS module)
       # create the needed directories on the host filesystem.
       mkdir -p $out/etc/bash_completion.d
+
+      # Agent needs systemctl/journalctl for service health checks.
+      # targetPkgs provides systemd libs but not the binaries in PATH.
+      mkdir -p $out/usr/bin
+      ln -sf ${pkgs.systemd}/bin/systemctl $out/usr/bin/systemctl
+      ln -sf ${pkgs.systemd}/bin/journalctl $out/usr/bin/journalctl
     '';
 
     runScript = execWrapper;
