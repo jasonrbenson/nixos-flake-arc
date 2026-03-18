@@ -155,7 +155,7 @@ in
       "d /var/opt/azcmagent/certs 0750 himds himds -"
       "d /var/opt/azcmagent/log 0775 himds himds -"
       "d /var/opt/azcmagent/socks 0750 himds himds -"
-      "d /var/opt/azcmagent/tokens 0750 root root -"
+      "d /var/opt/azcmagent/tokens 0750 root himds -"
       "d /var/lib/GuestConfig 0700 root root -"
       "d /var/lib/waagent 0700 root root -"
 
@@ -233,6 +233,9 @@ in
             chown -R himds:himds /var/opt/azcmagent/certs /var/opt/azcmagent/log /var/opt/azcmagent/socks 2>/dev/null || true
             # agentconfig.json and other config files in the state dir
             find /var/opt/azcmagent -maxdepth 1 -type f -exec chown himds:himds {} + 2>/dev/null || true
+            # Token files created by azcmagent connect (root) — himds needs group-read
+            chgrp himds /var/opt/azcmagent/tokens /var/opt/azcmagent/tokens/*.key 2>/dev/null || true
+            chmod g+r /var/opt/azcmagent/tokens/*.key 2>/dev/null || true
           '';
         in "+${fixPerms}";
         ExecStart = "${cfg.package}/bin/azcmagent-fhs /opt/azcmagent/bin/himds";
