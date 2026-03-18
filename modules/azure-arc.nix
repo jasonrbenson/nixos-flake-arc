@@ -138,12 +138,17 @@ in
     };
 
     # State directories
+    # State directories — using root ownership for PoC simplicity.
+    # The real DEB postinst uses himds:himds, but azcmagent connect (run as
+    # root) creates root-owned files that himds can't modify. Running
+    # services as root for now avoids permission issues; proper user
+    # separation is a Phase 4 hardening task.
     systemd.tmpfiles.rules = [
-      "d /var/opt/azcmagent 0750 root himds -"
-      "d /var/opt/azcmagent/certs 0750 himds himds -"
-      "d /var/opt/azcmagent/log 0750 himds himds -"
-      "d /var/opt/azcmagent/socks 0750 himds himds -"
-      "d /var/opt/azcmagent/tokens 0750 himds himds -"
+      "d /var/opt/azcmagent 0755 root root -"
+      "d /var/opt/azcmagent/certs 0755 root root -"
+      "d /var/opt/azcmagent/log 0755 root root -"
+      "d /var/opt/azcmagent/socks 0755 root root -"
+      "d /var/opt/azcmagent/tokens 0755 root root -"
       "d /var/lib/GuestConfig 0700 root root -"
       "d /var/lib/waagent 0700 root root -"
     ];
@@ -171,8 +176,10 @@ in
         TimeoutStartSec = 5;
         Restart = "on-failure";
         RestartSec = "5s";
-        User = "himds";
-        Group = "himds";
+
+        # PoC: running as root to avoid permission conflicts between
+        # azcmagent connect (root) and himds service. Phase 4 will
+        # restore User=himds with proper ownership setup.
 
         # Note: bwrap (used by buildFHSEnv) requires mount + user namespaces,
         # so we cannot use RestrictNamespaces or ProtectSystem here.
@@ -194,8 +201,6 @@ in
         TimeoutStartSec = 5;
         Restart = "on-failure";
         RestartSec = "5s";
-        User = "arcproxy";
-        Group = "himds";
 
         PrivateTmp = false;
       };
