@@ -214,6 +214,7 @@ in
 
       environment = {
         HOME = "/var/lib/GuestConfig";
+        LD_LIBRARY_PATH = "/opt/GC_Service/GC";
       };
 
       serviceConfig = {
@@ -233,6 +234,10 @@ in
       wantedBy = [ "multi-user.target" "himdsd.service" ];
       after = [ "network.target" "himdsd.service" ];
       requires = [ "himdsd.service" ];
+
+      environment = {
+        LD_LIBRARY_PATH = "/opt/GC_Ext/GC";
+      };
 
       serviceConfig = {
         Type = "simple";
