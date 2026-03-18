@@ -82,25 +82,26 @@ let
     ];
 
     extraBuildCommands = ''
+      # extraBuildCommands runs in a temp build dir, not $out.
+      # All paths must be prefixed with $out to land in the rootfs.
+
       # Core agent → /opt/azcmagent/
-      mkdir -p opt/azcmagent
-      cp -r ${azcmagent-unwrapped}/azcmagent/* opt/azcmagent/
+      mkdir -p $out/opt/azcmagent
+      cp -r ${azcmagent-unwrapped}/azcmagent/* $out/opt/azcmagent/
 
       # Extension Manager → /opt/GC_Ext/
-      mkdir -p opt/GC_Ext
-      cp -r ${azcmagent-unwrapped}/GC_Ext/* opt/GC_Ext/
+      mkdir -p $out/opt/GC_Ext
+      cp -r ${azcmagent-unwrapped}/GC_Ext/* $out/opt/GC_Ext/
 
       # Guest Configuration → /opt/GC_Service/
-      mkdir -p opt/GC_Service
-      cp -r ${azcmagent-unwrapped}/GC_Service/* opt/GC_Service/
+      mkdir -p $out/opt/GC_Service
+      cp -r ${azcmagent-unwrapped}/GC_Service/* $out/opt/GC_Service/
 
       # State directories the agent expects
-      mkdir -p var/opt/azcmagent/{certs,log,socks,tokens}
-      mkdir -p var/lib/GuestConfig
-      mkdir -p var/lib/waagent
-      mkdir -p lib/systemd/system
-      mkdir -p lib/systemd/system.conf.d
-      mkdir -p etc/bash_completion.d
+      mkdir -p $out/var/opt/azcmagent/{certs,log,socks,tokens}
+      mkdir -p $out/var/lib/GuestConfig
+      mkdir -p $out/var/lib/waagent
+      mkdir -p $out/etc/bash_completion.d
     '';
 
     runScript = "/opt/azcmagent/bin/azcmagent";
