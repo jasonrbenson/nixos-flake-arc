@@ -101,6 +101,38 @@
         default = self.nixosModules.azure-arc;
       };
 
+      # --- Test VM Configurations ---
+      # Complete NixOS systems for testing the Arc agent.
+      #
+      # Local UTM (aarch64):  nixos-rebuild switch --flake .#arc-test-vm-aarch64
+      # Azure (x86_64):       nix run github:nix-community/nixos-anywhere -- --flake .#arc-test-vm-x86_64 root@<ip>
+      # Build VM script:      nix build .#nixosConfigurations.arc-test-vm-aarch64.config.system.build.vm
+      nixosConfigurations = {
+        arc-test-vm-aarch64 = nixpkgs-unstable.lib.nixosSystem {
+          system = "aarch64-linux";
+          modules = [
+            self.nixosModules.azure-arc
+            ./tests/vm-config.nix
+            {
+              nixpkgs.overlays = [ self.overlays.default ];
+              networking.hostName = "arc-test-aarch64";
+            }
+          ];
+        };
+
+        arc-test-vm-x86_64 = nixpkgs-unstable.lib.nixosSystem {
+          system = "x86_64-linux";
+          modules = [
+            self.nixosModules.azure-arc
+            ./tests/vm-config.nix
+            {
+              nixpkgs.overlays = [ self.overlays.default ];
+              networking.hostName = "arc-test-x86-64";
+            }
+          ];
+        };
+      };
+
       # --- Overlay for composability ---
       overlays.default = final: prev: {
         azcmagent = self.packages.${prev.system}.azcmagent;
