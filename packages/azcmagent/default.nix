@@ -103,10 +103,10 @@ let
       mkdir -p $out/opt/GC_Service
       cp -r ${azcmagent-unwrapped}/GC_Service/* $out/opt/GC_Service/
 
-      # State directories the agent expects
-      mkdir -p $out/var/opt/azcmagent/{certs,log,socks,tokens}
-      mkdir -p $out/var/lib/GuestConfig
-      mkdir -p $out/var/lib/waagent
+      # State directories (/var) are NOT placed here because the bwrap
+      # rootfs is read-only. Instead, the host's /var is auto-mounted
+      # read-write, and systemd.tmpfiles.rules (in the NixOS module)
+      # create the needed directories on the host filesystem.
       mkdir -p $out/etc/bash_completion.d
     '';
 
