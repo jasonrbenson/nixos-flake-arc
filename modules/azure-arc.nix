@@ -178,6 +178,21 @@ in
             ${pkgs.rsync}/bin/rsync -a --ignore-existing ${cfg.package.passthru.unwrapped}/azcmagent/ /var/opt/azcmagent/opt-azcmagent/
             ${pkgs.rsync}/bin/rsync -a --ignore-existing ${cfg.package.passthru.unwrapped}/GC_Ext/ /var/opt/azcmagent/opt-gc-ext/
             ${pkgs.rsync}/bin/rsync -a --ignore-existing ${cfg.package.passthru.unwrapped}/GC_Service/ /var/opt/azcmagent/opt-gc-service/
+
+            # Fix permissions (nix store copies are read-only)
+            chmod -R u+w /var/opt/azcmagent/opt-azcmagent/
+            chmod -R u+w /var/opt/azcmagent/opt-gc-ext/
+            chmod -R u+w /var/opt/azcmagent/opt-gc-service/
+
+            # Create gc.config files that tell gc_linux_service its mode
+            # (the install.sh scripts normally do this)
+            echo '{"ServiceType" : "Extension"}' > /var/opt/azcmagent/opt-gc-ext/GC/gc.config
+            echo '{"ServiceType" : "GuestConfiguration"}' > /var/opt/azcmagent/opt-gc-service/GC/gc.config
+
+            # Create sockets directories for GC IPC
+            mkdir -p /var/opt/azcmagent/opt-gc-ext/GC/sockets
+            mkdir -p /var/opt/azcmagent/opt-gc-service/GC/sockets
+
             echo "Azure Arc writable overlays initialized."
           '';
         in "${initScript}";
