@@ -94,6 +94,8 @@ let
       pkgs.stdenv.cc.cc.lib
       # libpam.so.0 needed by GC components
       pkgs.linux-pam
+      # gpg needed by extension package signature validation
+      pkgs.gnupg
     ];
 
     extraBuildCommands = ''
