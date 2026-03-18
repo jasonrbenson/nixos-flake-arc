@@ -2,9 +2,7 @@
 , stdenv
 , fetchurl
 , dpkg
-, autoPatchelfHook
 , buildFHSEnv
-, writeShellScriptBin
 , openssl
 , zlib
 , glibc
@@ -29,44 +27,25 @@ let
 
     nativeBuildInputs = [ dpkg ];
 
+    dontBuild = true;
+    dontConfigure = true;
+
     unpackPhase = ''
       dpkg-deb -x $src .
     '';
 
     installPhase = ''
-      runHook preInstall
       mkdir -p $out
 
       # Core agent binaries (statically linked Go — no patching needed)
-      # Binaries: himds, arcproxy, azcmagent_executable, azcmagent (bash wrapper)
       cp -r opt/azcmagent $out/azcmagent
 
       # Guest Configuration service (dynamically linked — needs FHS or patching)
-      # Contains: gc_linux_service, gc_worker, .NET runtime, PowerShell, native libs
       cp -r opt/GC_Ext $out/GC_Ext
       cp -r opt/GC_Service $out/GC_Service
 
-      runHook postInstall
-    '';
-
-    # Generate a manifest for debugging and auditing
-    postInstall = ''
-      {
-        echo "=== azcmagent ${version} extracted contents ==="
-        echo ""
-        echo "--- ELF binaries ---"
-        find $out -type f -executable -exec sh -c 'file "$1" | grep -q ELF && echo "$1"' _ {} \;
-        echo ""
-        echo "--- Shell scripts ---"
-        find $out -name "*.sh" -type f
-        echo ""
-        echo "--- Systemd units ---"
-        find $out -name "*.service" -o -name "*.systemd"
-        echo ""
-        echo "--- Shared libraries ---"
-        find $out -name "*.so*" -type f | head -30
-        echo "..."
-      } > $out/MANIFEST.txt
+      # Simple manifest
+      find $out -type f | sort > $out/MANIFEST.txt
     '';
 
     meta = with lib; {
