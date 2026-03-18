@@ -60,7 +60,11 @@ let
   # Passthrough wrapper: exec whatever command is passed as arguments.
   # This lets systemd services and users run arbitrary binaries inside the
   # FHS namespace, e.g.  azcmagent-fhs /opt/azcmagent/bin/himds
-  execWrapper = writeShellScript "azcmagent-exec" ''exec "$@"'';
+  # cd to the binary's directory first so RPATH "." resolves co-located .so files
+  execWrapper = writeShellScript "azcmagent-exec" ''
+    cd "$(dirname "$1")" 2>/dev/null || true
+    exec "$@"
+  '';
 
   # FHS environment for the full agent stack
   #

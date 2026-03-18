@@ -219,7 +219,6 @@ in
       serviceConfig = {
         Type = "simple";
         ExecStart = "${cfg.package}/bin/azcmagent-fhs /opt/GC_Service/GC/gc_linux_service";
-        WorkingDirectory = "/opt/GC_Service/GC";
         TimeoutStartSec = 5;
         Restart = "always";
         RestartSec = "10s";
@@ -238,7 +237,6 @@ in
       serviceConfig = {
         Type = "simple";
         ExecStart = "${cfg.package}/bin/azcmagent-fhs /opt/GC_Ext/GC/gc_linux_service";
-        WorkingDirectory = "/opt/GC_Ext/GC";
         TimeoutStartSec = 5;
         Restart = "always";
         RestartSec = "10s";
