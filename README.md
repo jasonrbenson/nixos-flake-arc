@@ -4,36 +4,38 @@ NixOS flake for running the Azure Arc Connected Machine Agent (`azcmagent`) on N
 
 ## Status
 
-🚧 **Early Development** — This is an interim proof-of-concept to demonstrate that NixOS
-can be a first-class citizen for Azure Arc, and to provide a blueprint for the Azure Arc
-Product Group to invest in native NixOS support.
+🟢 **Working PoC** — The core agent and extension framework are functional on NixOS.
+Machine connects to Azure Arc, heartbeats, and processes extension deployments. This is an
+interim proof-of-concept to demonstrate feasibility to the Azure Arc Product Group and
+provide a blueprint for native NixOS support.
 
 ## Why?
 
 Azure Arc's Connected Machine Agent officially supports only FHS-compliant Linux
 distributions (RHEL, Ubuntu, SLES, etc.). NixOS uses `/nix/store` instead of standard
 FHS paths, which breaks the agent's assumptions. This project bridges that gap using a
-`buildFHSEnv` sandbox wrapped in a NixOS-native declarative module.
+`buildFHSEnv` (bubblewrap) sandbox wrapped in a NixOS-native declarative module.
 
 ## Architecture
 
 ```
 ┌───────────────────────────────────────────────┐
-│  NixOS Module (declarative config)            │
+│  NixOS Module (services.azure-arc.*)          │
 │  ┌─────────────────────────────────────────┐  │
-│  │  services.azure-arc.enable = true;      │  │
-│  │  services.azure-arc.tenantId = "...";   │  │
-│  │  services.azure-arc.extensions = {...}; │  │
+│  │  Declarative config + systemd services  │  │
+│  │  himdsd, arcproxyd, gcad, extd          │  │
 │  └─────────────┬───────────────────────────┘  │
 │                 │                              │
 │  ┌─────────────▼───────────────────────────┐  │
-│  │  FHS Runtime Sandbox (buildFHSEnv)      │  │
-│  │  Agent binaries + dependencies          │  │
-│  │  systemd services run inside sandbox    │  │
+│  │  FHS Runtime Sandbox (bubblewrap)       │  │
+│  │  /opt/azcmagent  (writable overlay)     │  │
+│  │  /opt/GC_Ext     (writable overlay)     │  │
+│  │  /opt/GC_Service (writable overlay)     │  │
 │  └─────────────────────────────────────────┘  │
 │                                               │
-│  State: /var/lib/azure-arc/                   │
-│  Logs:  /var/log/azure-arc/                   │
+│  State: /var/opt/azcmagent/                   │
+│  Logs:  /var/opt/azcmagent/log/               │
+│  Extensions: /var/lib/waagent/                │
 └───────────────────────────────────────────────┘
 ```
 
@@ -76,6 +78,30 @@ FHS paths, which breaks the agent's assumptions. This project bridges that gap u
 sudo arc-connect
 ```
 
+## Supported Platforms
+
+| Architecture | Status |
+|---|---|
+| aarch64-linux | ✅ Working (tested on NixOS 26.05 in UTM/QEMU) |
+| x86_64-linux | 🔄 Untested (package builds, needs VM validation) |
+
+## Extension Compatibility
+
+Tested on aarch64 NixOS 26.05, Azure Arc agent v1.61, AzureUSGovernment.
+
+| Extension | Install | Enable | Notes |
+|---|---|---|---|
+| **Custom Script** v2.1.14 | ✅ | ✅ | Full end-to-end success — runs commands, returns output to Azure |
+| **MDE** v1.0.10.0 | ✅ | ⚠️ | Handler runs; needs Defender onboarding blob for full config |
+| **AMA** v1.40.0 | ❌ | — | Blocked by distro allowlist (`ID=nixos` not recognized) |
+| **DSCForLinux** | — | — | Not available in USGov region (cloud limitation) |
+
+The extension delivery pipeline (download → GPG validate → unzip → execute) works fully.
+Extension-specific failures are due to distro checks in individual extensions, not the
+NixOS platform.
+
+📄 **[Full gaps analysis and findings →](docs/gaps-and-findings.md)**
+
 ## Development
 
 ```bash
@@ -89,23 +115,13 @@ nix build .#azcmagent
 nix flake check
 ```
 
-## Supported Platforms
+## Documentation
 
-| Architecture | Status |
-|---|---|
-| x86_64-linux | 🔄 In Progress |
-| aarch64-linux | 🔄 Planned (pending Microsoft ARM64 binary availability) |
-
-## Extension Support
-
-| Extension | Status |
-|---|---|
-| Core Agent (connect/heartbeat) | 🔄 In Progress |
-| Azure Monitor Agent | 📋 Planned (Phase 2) |
-| MDE (Defender for Endpoint) | 📋 Planned (Phase 3) |
-| Guest Configuration | 📋 Planned (Phase 3) |
-| Custom Script Extension | 📋 Planned |
-| Azure Update Manager | 📋 Planned |
+- [Architecture](docs/architecture.md) — Technical design of the FHS sandbox approach
+- [Gaps and Findings](docs/gaps-and-findings.md) — Current gaps, root causes, and recommendations
+- [Extension Compatibility](docs/extension-compat.md) — Extension testing matrix
+- [Test Environment](docs/test-environment.md) — Setting up a test VM
+- [Demo Guide](docs/demo-guide.md) — Walkthrough for demonstrations
 
 ## License
 

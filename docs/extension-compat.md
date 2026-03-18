@@ -2,47 +2,71 @@
 
 ## Overview
 
-Azure Arc extensions are managed by the Extension Manager component of the Connected
-Machine Agent. Extensions are downloaded to `/opt/GC_Ext/downloads/` and installed to
-`/var/lib/waagent/<extension>/`. All of this runs inside the FHS sandbox.
+Azure Arc extensions are managed by the Extension Manager (extd) component of the
+Connected Machine Agent. Extensions are downloaded to `/var/lib/GuestConfig/downloads/`,
+validated via GPG signature, and installed to `/var/lib/waagent/<extension>/`. All of this
+runs inside the FHS bubblewrap sandbox.
 
-## Extension Compatibility
+## Tested Extensions
 
-| Extension | Publisher | Type | NixOS Status | Notes |
+Testing performed on aarch64 NixOS 26.05, agent v1.61, AzureUSGovernment (usgovvirginia).
+
+| Extension | Publisher | Type | Version | Result | Details |
+|---|---|---|---|---|---|
+| Custom Script | Microsoft.Azure.Extensions | CustomScript | 2.1.14 | ✅ **Full Success** | Native Go binary, no OS checks. Ran commands and returned output to Azure. |
+| MDE | Microsoft.Azure.AzureDefenderForServers | MDE.Linux | 1.0.10.0 | ✅ **Install OK** | Python handler runs. Needs Defender onboarding blob for full activation. No distro check. |
+| AMA | Microsoft.Azure.Monitor | AzureMonitorLinuxAgent | 1.40.0 | ❌ **Blocked** | Exit 51: `UnsupportedOperatingSystem`. Hardcoded distro allowlist rejects `ID=nixos`. |
+| DSCForLinux | Microsoft.OSTCExtensions | DSCForLinux | — | ⛔ **Unavailable** | Not available in USGov Virginia (cloud/region limitation, not NixOS-related). |
+
+## Untested Extensions
+
+| Extension | Publisher | Type | Expected Outcome | Notes |
 |---|---|---|---|---|
-| Azure Monitor Agent | Microsoft.Azure.Monitor | AzureMonitorLinuxAgent | 📋 Untested | Primary test candidate for Phase 2 |
-| MDE | Microsoft.Azure.AzureDefenderForServers | MDE.Linux | 📋 Untested | May need Python, kernel features (eBPF/audit) |
-| Guest Configuration | Microsoft.GuestConfiguration | ConfigurationforLinux | 📋 Untested | Core Arc feature for policy compliance |
-| Custom Script | Microsoft.Azure.Extensions | CustomScript | 📋 Untested | Should be straightforward in FHS env |
-| Azure Update Manager | Microsoft.SoftwareUpdateConfiguration | LinuxOsUpdateExtension | 📋 Untested | May conflict with NixOS update model |
-| Key Vault | Microsoft.Azure.KeyVault | KeyVaultForLinux | 📋 Untested | Certificate management |
+| Azure Update Manager | Microsoft.SoftwareUpdateConfiguration | LinuxOsUpdateExtension | ❓ Unknown | Fundamentally incompatible with NixOS declarative updates |
+| Key Vault | Microsoft.Azure.KeyVault | KeyVaultForLinux | ❓ Likely works | Certificate management, probably no OS check |
+| Guest Configuration | Microsoft.GuestConfiguration | ConfigurationforLinux | ❓ Unknown | May have OS-specific policy scripts |
+
+## Extension Pipeline Validation
+
+The full extension delivery pipeline has been validated on NixOS:
+
+1. ✅ Azure notification → himds receives extension event
+2. ✅ extd polls for pending extensions
+3. ✅ Extension package downloaded from Azure blob storage
+4. ✅ GPG signature validation (requires `gnupg` in sandbox)
+5. ✅ SHA256 checksum verification
+6. ✅ Package unzipped to `/var/lib/GuestConfig/downloads/`
+7. ✅ Extension copied to `/var/lib/waagent/<name>-<version>/`
+8. ✅ Install handler executed via `systemd-run --scope`
+9. ✅ Enable handler executed
+10. ✅ Status reported back to Azure (GC agent service reports)
 
 ## Known Challenges
 
+### AMA (Azure Monitor Agent)
+- **Blocked by distro allowlist** — `agent.py` checks `ID` from `/etc/os-release` against
+  `supported_distros.py`. NixOS is not listed. This is the only reason AMA fails.
+- Workaround: Patch `supported_distros.py` after download (fragile).
+- Recommendation: Ask Arc PG to add NixOS to the allowlist.
+
 ### MDE (Microsoft Defender for Endpoint)
-- May require kernel audit subsystem or eBPF — NixOS supports both but may need
-  explicit kernel configuration options
-- Real-time protection uses fanotify — supported on NixOS
-- May expect SELinux; NixOS defaults to AppArmor
-- Likely requires Python runtime in the FHS environment
+- Extension handler installs and enables without issue
+- Requires Defender for Endpoint onboarding blob via `--settings`
+- May need additional FHS sandbox dependencies for the `mdatp` daemon
+- Likely needs kernel audit/eBPF features (NixOS supports both)
 
 ### Azure Update Manager
 - Fundamentally incompatible with NixOS's declarative update model
-- May need a shim/adapter that translates update requests to `nixos-rebuild`
+- Would need a shim that translates update requests to `nixos-rebuild`
 - Low priority — NixOS has its own superior update story
-
-### Guest Configuration
-- Expects to write compliance state to standard paths
-- Should work within the FHS sandbox
-- Policy definitions may reference FHS paths in their assessment scripts
 
 ## Testing Protocol
 
 For each extension:
-1. Deploy via Azure portal to the Arc-connected NixOS machine
-2. Verify extension installation succeeds (check `azcmagent extension list`)
-3. Verify extension is running (check extension-specific health indicators)
-4. Verify telemetry/data reaches Azure (check in Azure portal)
-5. Test extension update lifecycle
-6. Test extension removal
-7. Document any workarounds required
+1. Deploy via `az connectedmachine extension create`
+2. Monitor `/var/lib/GuestConfig/ext_mgr_logs/gc_ext.log` for delivery progress
+3. Check state at `/var/lib/GuestConfig/extension_logs/<name>-<version>/state.json`
+4. Check stderr/stdout in the same directory
+5. Verify portal status via `az connectedmachine extension list`
+6. Document any missing sandbox dependencies
+7. Test extension removal
