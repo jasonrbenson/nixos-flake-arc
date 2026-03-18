@@ -305,12 +305,14 @@ Azure Portal / CLI
 | Metric                          | Value                                            |
 |---------------------------------|--------------------------------------------------|
 | Systemd services running        | 4 (`himdsd`, `arcproxyd`, `gcad`, `extd`)        |
-| Extensions tested               | 3                                                |
+| Extensions tested               | 5                                                |
 | CustomScript                    | ✅ Full success — command executed, output returned |
 | MDE (Defender)                  | ✅ Install + enable succeeded                     |
 | AMA (Azure Monitor)            | ❌ Blocked by distro allowlist only (exit code 51) |
+| Key Vault                       | ⚠️ Not delivered — GC auth key gap                |
+| Guest Configuration             | ❌ IMDS timeout on non-Azure VM                    |
 | Extension pipeline validated    | ✅ Download → GPG → SHA256 → install → enable → report |
-| Platform-level failures         | **Zero** — all issues are extension-specific allowlists |
+| Platform-level failures         | **Zero** — all issues are extension-specific (allowlists, IMDS deps, auth gaps) |
 | Agent version                   | v1.61.03319.859                                  |
 | Supported architectures (build) | `x86_64-linux`, `aarch64-linux`                  |
 | Validated architecture          | `aarch64-linux` (UTM on macOS)                   |
@@ -351,6 +353,22 @@ Azure Portal / CLI
 > The only bind mounts are the writable state directories the agent needs.
 > Service user separation (`himds` user, `arcproxy` user) is defined in the
 > module and will be fully enforced in a future phase.
+
+**"What about Key Vault and Guest Configuration?"**
+
+> We tested both. Key Vault (KeyVaultForLinux v3.5.3041.185) got stuck in
+> "Creating" state — the root cause is a missing GC↔himds auth key registration
+> in our init process. Poll-based extension refresh can't authenticate to the
+> local MSI endpoint. Notification-based delivery works for most extensions, so
+> this is a medium-severity gap we can fix by replicating the auth key setup
+> from `install.sh`.
+>
+> Guest Configuration is a harder problem — the gcad agent assumes Azure IMDS
+> (169.254.169.254) is available for metadata and tokens. On non-Azure VMs like
+> our test environment, IMDS doesn't exist and every request times out (6 minutes
+> per cycle). The agent doesn't fall back to the Arc-local himds endpoint. This
+> means Guest Configuration is non-functional on any non-Azure Arc machine — not
+> just NixOS. This may be a bug in gcad that the Product Group should investigate.
 
 **"Does this work on x86_64?"**
 

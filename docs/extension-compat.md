@@ -16,6 +16,8 @@ Testing performed on aarch64 NixOS 26.05, agent v1.61, AzureUSGovernment (usgovv
 | Custom Script | Microsoft.Azure.Extensions | CustomScript | 2.1.14 | ✅ **Full Success** | Native Go binary, no OS checks. Ran commands and returned output to Azure. |
 | MDE | Microsoft.Azure.AzureDefenderForServers | MDE.Linux | 1.0.10.0 | ✅ **Install OK** | Python handler runs. Needs Defender onboarding blob for full activation. No distro check. |
 | AMA | Microsoft.Azure.Monitor | AzureMonitorLinuxAgent | 1.40.0 | ❌ **Blocked** | Exit 51: `UnsupportedOperatingSystem`. Hardcoded distro allowlist rejects `ID=nixos`. |
+| Key Vault | Microsoft.Azure.KeyVault | KeyVaultForLinux | 3.5.3041.185 | ⚠️ **Not Delivered** | Extension stuck in "Creating" state. GC↔himds MSI auth key exchange incomplete — poll-based refresh can't authenticate to local himds endpoint (port 40341). Notification-based delivery works but KV was requested during a notification gap. See [Gap 9](gaps-and-findings.md#gap-9-gchimds-msi-auth-key-registration-not-replicated). |
+| Guest Configuration | Microsoft.GuestConfiguration | ConfigurationforLinux | — | ❌ **Non-functional** | gcad requires Azure IMDS (169.254.169.254:80) for metadata and MSI tokens. On non-Azure VMs (UTM/QEMU), IMDS times out (2 min × 3 attempts = 6 min/cycle). Agent doesn't fall back to Arc-local himds endpoint. Assignments never pulled. See [Gap 10](gaps-and-findings.md#gap-10-guest-configuration-agent-requires-azure-imds). |
 | DSCForLinux | Microsoft.OSTCExtensions | DSCForLinux | — | ⛔ **Unavailable** | Not available in USGov Virginia (cloud/region limitation, not NixOS-related). |
 
 ## Untested Extensions
@@ -23,8 +25,6 @@ Testing performed on aarch64 NixOS 26.05, agent v1.61, AzureUSGovernment (usgovv
 | Extension | Publisher | Type | Expected Outcome | Notes |
 |---|---|---|---|---|
 | Azure Update Manager | Microsoft.SoftwareUpdateConfiguration | LinuxOsUpdateExtension | ❓ Unknown | Fundamentally incompatible with NixOS declarative updates |
-| Key Vault | Microsoft.Azure.KeyVault | KeyVaultForLinux | ❓ Likely works | Certificate management, probably no OS check |
-| Guest Configuration | Microsoft.GuestConfiguration | ConfigurationforLinux | ❓ Unknown | May have OS-specific policy scripts |
 
 ## Extension Pipeline Validation
 
@@ -54,6 +54,24 @@ The full extension delivery pipeline has been validated on NixOS:
 - Requires Defender for Endpoint onboarding blob via `--settings`
 - May need additional FHS sandbox dependencies for the `mdatp` daemon
 - Likely needs kernel audit/eBPF features (NixOS supports both)
+
+### Key Vault (KeyVaultForLinux)
+- Extension was not delivered — stuck in "Creating" state in the Azure portal
+- Root cause: GC↔himds MSI auth key exchange is incomplete in our init process
+- The `gc_linux_service` can't authenticate to himds's internal MSI endpoint (port 40341)
+- Error: `Failed to get the msi authentication key`
+- Notification-based delivery works, but KV was requested during a notification gap
+- Poll-based refresh (the fallback) fails without the auth key
+- **Fix needed**: Replicate the auth key registration from `install.sh` in `azure-arc-init`
+
+### Guest Configuration (gcad)
+- Assignments are never pulled by the agent
+- Root cause: gcad tries Azure IMDS (169.254.169.254:80) for metadata and MSI tokens
+- On non-Azure VMs, IMDS doesn't exist → 2 min timeout × 3 attempts = 6 min per cycle
+- The agent does **not** fall back to the Arc-local himds endpoint after IMDS failure
+- This is a fundamental limitation: gcad assumes it's running on an Azure VM
+- **Impact**: Guest Configuration is completely non-functional on non-Azure Arc machines
+- This may be a bug in gcad — it should use himds on Arc-connected machines
 
 ### Azure Update Manager
 - Fundamentally incompatible with NixOS's declarative update model

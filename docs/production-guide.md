@@ -501,11 +501,38 @@ The flake pins a specific agent version. Microsoft's auto-update mechanism is
 intentionally disabled — version changes go through `nix flake update` for
 reproducibility.
 
+### Guest Configuration Non-Functional on Non-Azure VMs
+
+The Guest Configuration agent (`gcad`) requires the Azure Instance Metadata
+Service (IMDS) at `169.254.169.254:80` for VM metadata and MSI tokens. On
+non-Azure Arc-connected machines (e.g., on-premises, UTM/QEMU, other clouds),
+IMDS does not exist and gcad times out on every refresh cycle (2 min × 3
+attempts = 6 min per cycle). Guest Configuration assignments are never pulled
+and policy compliance is never reported.
+
+**Impact:** Guest Configuration policies and audit assignments do not function
+on non-Azure Arc machines. This is a limitation of the GC agent, not NixOS.
+**Tracking:** See [Gap 10](gaps-and-findings.md#gap-10-guest-configuration-agent-requires-azure-imds).
+
+### GC Poll-Based Extension Refresh Requires Auth Key Registration
+
+The GC components authenticate to himds's internal MSI endpoint (port 40341)
+using a pre-shared key established during `install.sh`. Our Nix packaging
+doesn't fully replicate this key exchange, so poll-based extension refresh
+fails with `Failed to get the msi authentication key`. Notification-based
+delivery works for most extensions, but extensions requested during a
+notification gap may not be delivered.
+
+**Impact:** Extensions like Key Vault that rely on poll-based refresh may
+get stuck in "Creating" state.
+**Tracking:** See [Gap 9](gaps-and-findings.md#gap-9-gchimds-msi-auth-key-registration-not-replicated).
+
 ### Extension Compatibility
 
 Not all extensions work on NixOS. See [extension-compat.md](extension-compat.md)
 for the full testing matrix. The extension delivery pipeline itself is fully
-functional — failures are due to individual extensions' OS-specific checks.
+functional — failures are due to individual extensions' OS-specific checks,
+IMDS dependencies, or GC auth gaps.
 
 ---
 

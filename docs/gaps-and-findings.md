@@ -21,6 +21,8 @@ Azure Arc in AzureUSGovernment (usgovvirginia).
 | **Custom Script** v2.1.14 | Microsoft.Azure.Extensions | ✅ | ✅ | ✅ | ✅ | **Succeeded** | — |
 | **MDE** v1.0.10.0 | Microsoft.Azure.AzureDefenderForServers | ✅ | ✅ | ✅ | ⚠️ | **Enabled** | Needs onboarding blob (config issue, not platform) |
 | **AMA** v1.40.0 | Microsoft.Azure.Monitor | ✅ | ✅ | ❌ Exit 51 | — | **Failed** | Distro allowlist rejects `ID=nixos` |
+| **Key Vault** v3.5.3041.185 | Microsoft.Azure.KeyVault | — | — | — | — | ⚠️ **Creating** (stuck) | GC↔himds MSI auth key exchange incomplete; poll-based refresh can't authenticate to himds (port 40341) |
+| **Guest Configuration** (AuditSecureProtocol) | Microsoft.GuestConfiguration | — | — | — | — | ❌ **Never pulled** | gcad requires Azure IMDS (169.254.169.254); times out on non-Azure VMs (6 min/cycle) |
 | **DSCForLinux** | Microsoft.OSTCExtensions | — | — | — | — | — | Not available in USGov region |
 
 ## What Works
@@ -170,6 +172,54 @@ These resolve on the next polling cycle (typically within 5 minutes).
 services, which fails on NixOS because systemd units are managed declaratively. This
 doesn't affect actual extension operations — only the CLI query.
 
+### Gap 9: GC↔himds MSI Auth Key Registration Not Replicated
+
+**Severity**: Medium — poll-based extension refresh fails; notification-based delivery works for most extensions
+**Extension**: Key Vault for Linux (KeyVaultForLinux) v3.5.3041.185
+**Error**: `Failed to get the msi authentication key`
+
+**Root Cause**: The GC component (`gc_linux_service`) authenticates HTTP requests to
+himds's internal MSI endpoint (port 40341) using a pre-shared key. This key is normally
+established during the official `install.sh` registration flow, which our Nix packaging
+doesn't fully replicate. Without this key, poll-based extension refresh fails because
+the extension manager can't authenticate to the local MSI endpoint.
+
+**Impact**: Extensions requested during a notification gap (between himds notification
+events) are not delivered. The Key Vault extension was stuck in "Creating" state because
+it was requested during such a gap and fell back to poll-based refresh, which failed.
+
+**Resolution needed**: Replicate the GC auth key registration step from `install.sh` in
+the `azure-arc-init` service. The init service currently creates `gc.config` and sockets
+but doesn't set up the pre-shared authentication key.
+
+**Additional finding**: `/var/opt/azcmagent/tokens/` must have `root:himds` ownership
+(not `root:root`) for himds to read managed identity keys. This was corrected during
+testing.
+
+### Gap 10: Guest Configuration Agent Requires Azure IMDS
+
+**Severity**: High — Guest Configuration is completely non-functional on non-Azure Arc machines
+**Component**: gcad (Guest Configuration agent daemon)
+**Error**: IMDS timeout — 2 min per attempt × 3 attempts = 6 min per cycle
+
+**Root Cause**: The Guest Configuration agent (`gcad`) attempts to reach the Azure Instance
+Metadata Service (IMDS) at `169.254.169.254:80` for VM metadata and MSI tokens. On
+non-Azure VMs (such as our UTM/QEMU test VM connected via Azure Arc), this endpoint does
+not exist and every request times out. The agent does **not** fall back to the Arc-local
+himds endpoint after IMDS failure — it fails the entire refresh cycle.
+
+**Impact**: Guest Configuration assignments (e.g., `AuditSecureProtocol`) are never
+pulled by the agent. Policy compliance data is never reported to Azure. This affects all
+non-Azure Arc-connected machines, not just NixOS.
+
+**Note**: This may be a bug or configuration gap in the GC agent itself. On Arc-connected
+non-Azure machines, gcad should use the local himds endpoint for identity and token
+operations instead of assuming Azure IMDS is available.
+
+**Recommendation to Product Group**: gcad should detect that it is running on an
+Arc-connected (non-Azure) machine and use the himds local endpoint instead of IMDS.
+Alternatively, provide a configuration option to specify the identity endpoint.
+
 ---
 
 ## FHS Sandbox Dependencies
@@ -234,10 +284,14 @@ To fully enable MDE on the Arc-connected NixOS machine:
    setting for validated non-standard distros.
 
 ### Medium Term (Agent-Level Improvements)
-3. **Document the GC initialization requirements** — The need for `gc.config` and `sockets/`
-   isn't documented outside of `install.sh`. This makes non-DEB/RPM packaging difficult.
+3. **Document the GC initialization requirements** — The need for `gc.config`, `sockets/`,
+   and the **GC↔himds auth key registration** aren't documented outside of `install.sh`.
+   This makes non-DEB/RPM packaging difficult.
 4. **Provide a tarball distribution** — A `.tar.gz` with a simple `setup.sh` (instead of
    DEB/RPM only) would make packaging for Nix, Guix, Alpine, etc. much easier.
+5. **Fix gcad IMDS fallback for Arc machines** — `gcad` should detect Arc-connected
+   (non-Azure) machines and use the local himds endpoint instead of Azure IMDS. Currently,
+   Guest Configuration is non-functional on all non-Azure Arc machines.
 
 ### Long Term (Native NixOS Support)
 5. **Publish agent binaries to a neutral registry** — OCI images, static tarballs, or a

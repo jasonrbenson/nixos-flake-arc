@@ -94,11 +94,13 @@ Tested on aarch64 NixOS 26.05, Azure Arc agent v1.61, AzureUSGovernment.
 | **Custom Script** v2.1.14 | ✅ | ✅ | Full end-to-end success — runs commands, returns output to Azure |
 | **MDE** v1.0.10.0 | ✅ | ⚠️ | Handler runs; needs Defender onboarding blob for full config |
 | **AMA** v1.40.0 | ❌ | — | Blocked by distro allowlist (`ID=nixos` not recognized) |
+| **Key Vault** v3.5.3041.185 | ⚠️ | — | Not delivered — GC↔himds auth key gap blocks poll-based refresh |
+| **Guest Configuration** | ❌ | — | IMDS timeout on non-Azure VM — gcad requires Azure IMDS endpoint |
 | **DSCForLinux** | — | — | Not available in USGov region (cloud limitation) |
 
 The extension delivery pipeline (download → GPG validate → unzip → execute) works fully.
-Extension-specific failures are due to distro checks in individual extensions, not the
-NixOS platform.
+Extension-specific failures are due to distro checks, IMDS dependencies, or GC auth gaps
+in individual extensions — not the NixOS platform.
 
 📄 **[Full gaps analysis and findings →](docs/gaps-and-findings.md)**
 
