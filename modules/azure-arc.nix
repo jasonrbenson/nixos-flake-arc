@@ -139,7 +139,7 @@ in
 
     # State directories
     systemd.tmpfiles.rules = [
-      "d /var/opt/azcmagent 0750 root root -"
+      "d /var/opt/azcmagent 0750 root himds -"
       "d /var/opt/azcmagent/certs 0750 himds himds -"
       "d /var/opt/azcmagent/log 0750 himds himds -"
       "d /var/opt/azcmagent/socks 0750 himds himds -"
