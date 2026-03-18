@@ -3,6 +3,7 @@
 , fetchurl
 , dpkg
 , buildFHSEnv
+, writeShellScript
 , openssl
 , zlib
 , glibc
@@ -56,6 +57,11 @@ let
     };
   };
 
+  # Passthrough wrapper: exec whatever command is passed as arguments.
+  # This lets systemd services and users run arbitrary binaries inside the
+  # FHS namespace, e.g.  azcmagent-fhs /opt/azcmagent/bin/himds
+  execWrapper = writeShellScript "azcmagent-exec" ''exec "$@"'';
+
   # FHS environment for the full agent stack
   #
   # Why FHS? The core agent binaries (himds, arcproxy, azcmagent_executable) are
@@ -104,7 +110,7 @@ let
       mkdir -p $out/etc/bash_completion.d
     '';
 
-    runScript = "/opt/azcmagent/bin/azcmagent";
+    runScript = execWrapper;
   };
 
 in

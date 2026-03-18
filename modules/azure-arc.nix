@@ -174,17 +174,9 @@ in
         User = "himds";
         Group = "himds";
 
-        # Security hardening (matches upstream)
-        PrivateTmp = true;
-        NoNewPrivileges = true;
-        ProtectSystem = "full";
-        ProtectHome = true;
-        ProtectKernelTunables = true;
-        ProtectKernelModules = true;
-        ProtectControlGroups = true;
-        RestrictNamespaces = "ipc net user uts";
-        MemoryDenyWriteExecute = true;
-        RestrictRealtime = true;
+        # Note: bwrap (used by buildFHSEnv) requires mount + user namespaces,
+        # so we cannot use RestrictNamespaces or ProtectSystem here.
+        PrivateTmp = false;
       };
     };
 
@@ -205,16 +197,7 @@ in
         User = "arcproxy";
         Group = "himds";
 
-        PrivateTmp = true;
-        NoNewPrivileges = true;
-        ProtectSystem = "full";
-        ProtectHome = true;
-        ProtectKernelTunables = true;
-        ProtectKernelModules = true;
-        ProtectControlGroups = true;
-        RestrictNamespaces = "ipc net user uts";
-        MemoryDenyWriteExecute = true;
-        RestrictRealtime = true;
+        PrivateTmp = false;
       };
     };
 
