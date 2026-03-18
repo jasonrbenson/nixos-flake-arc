@@ -153,7 +153,7 @@ in
     systemd.tmpfiles.rules = [
       "d /var/opt/azcmagent 0755 himds himds -"
       "d /var/opt/azcmagent/certs 0750 himds himds -"
-      "d /var/opt/azcmagent/log 0755 himds himds -"
+      "d /var/opt/azcmagent/log 0775 himds himds -"
       "d /var/opt/azcmagent/socks 0750 himds himds -"
       "d /var/opt/azcmagent/tokens 0750 root root -"
       "d /var/lib/GuestConfig 0700 root root -"
@@ -264,6 +264,14 @@ in
 
       serviceConfig = {
         Type = "simple";
+
+        # Fix arcproxy.log ownership — may be root/himds-owned from prior runs
+        ExecStartPre = let
+          fixPerms = pkgs.writeShellScript "fix-arcproxy-perms" ''
+            touch /var/opt/azcmagent/log/arcproxy.log
+            chown arcproxy:himds /var/opt/azcmagent/log/arcproxy.log /var/opt/azcmagent/log/arcproxy-*.log 2>/dev/null || true
+          '';
+        in "+${fixPerms}";
         ExecStart = "${cfg.package}/bin/azcmagent-fhs /opt/azcmagent/bin/arcproxy";
         TimeoutStartSec = 5;
         Restart = "on-failure";
