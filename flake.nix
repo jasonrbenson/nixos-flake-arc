@@ -21,16 +21,17 @@
       forAllSystems = flake-utils.lib.eachSystem supportedSystems;
 
       # Microsoft package source metadata — update these when upgrading
-      agentVersion = "1.48";
+      # Source: https://packages.microsoft.com/ubuntu/22.04/prod/dists/jammy/main/
+      agentVersion = "1.61.03319.859";
       agentSources = {
         x86_64-linux = {
-          url = "https://packages.microsoft.com/ubuntu/22.04/prod/pool/main/a/azcmagent/azcmagent_${agentVersion}.02646.952-ubuntu22.04_amd64.deb";
-          sha256 = "0000000000000000000000000000000000000000000000000000"; # TODO: replace after fetching
+          url = "https://packages.microsoft.com/ubuntu/22.04/prod/pool/main/a/azcmagent/azcmagent_${agentVersion}_amd64.deb";
+          sha256 = "d26ec8a0f94213761ced45286172c5f52d2ad747be9bc3c1e7fee88443329d73";
           arch = "amd64";
         };
         aarch64-linux = {
-          url = "https://packages.microsoft.com/ubuntu/22.04/prod/pool/main/a/azcmagent/azcmagent_${agentVersion}.02646.952-ubuntu22.04_arm64.deb";
-          sha256 = "0000000000000000000000000000000000000000000000000000"; # TODO: replace after fetching
+          url = "https://packages.microsoft.com/ubuntu/22.04/prod/pool/main/a/azcmagent/azcmagent_${agentVersion}_arm64.deb";
+          sha256 = "a9d9f8ad170ab2fc8483fe4a9950ec9065c8a068d477461eb311afdbb843a075";
           arch = "arm64";
         };
       };
@@ -45,14 +46,22 @@
       in
       {
         # --- Packages ---
-        packages = {
-          azcmagent = pkgs.callPackage ./packages/azcmagent {
-            inherit agentVersion;
-            agentSource = agentSources.${system} or (throw "Unsupported system: ${system}");
-          };
+        packages =
+          let
+            agentPkgs = pkgs.callPackage ./packages/azcmagent {
+              inherit agentVersion;
+              agentSource = agentSources.${system} or (throw "Unsupported system: ${system}");
+            };
+          in
+          {
+            # FHS-wrapped agent (full runtime)
+            azcmagent = agentPkgs.default;
 
-          default = self.packages.${system}.azcmagent;
-        };
+            # Extracted package (for inspection/debugging)
+            azcmagent-unwrapped = agentPkgs.unwrapped;
+
+            default = agentPkgs.default;
+          };
 
         # --- Development shell ---
         devShells.default = pkgs.mkShell {

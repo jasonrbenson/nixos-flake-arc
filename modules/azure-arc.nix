@@ -12,7 +12,7 @@ in
     package = mkOption {
       type = types.package;
       default = pkgs.azcmagent or (throw "azcmagent package not found. Add the nixos-flake-arc overlay to your nixpkgs.");
-      description = "The azcmagent package to use.";
+      description = "The azcmagent FHS-wrapped package to use.";
     };
 
     # --- Connection settings ---
@@ -84,7 +84,11 @@ in
 
     # --- Extension settings ---
     extensions = {
-      enable = mkEnableOption "Azure Arc VM extension management";
+      enable = mkOption {
+        type = types.bool;
+        default = true;
+        description = "Enable Azure Arc VM extension management (extd service).";
+      };
 
       allowList = mkOption {
         type = types.listOf types.str;
@@ -100,17 +104,13 @@ in
       };
     };
 
-    # --- State directories ---
-    stateDir = mkOption {
-      type = types.path;
-      default = "/var/lib/azure-arc";
-      description = "Directory for Azure Arc agent state data.";
-    };
-
-    logDir = mkOption {
-      type = types.path;
-      default = "/var/log/azure-arc";
-      description = "Directory for Azure Arc agent logs.";
+    # --- Guest Configuration ---
+    guestConfiguration = {
+      enable = mkOption {
+        type = types.bool;
+        default = true;
+        description = "Enable Azure Arc Guest Configuration agent (gcad service).";
+      };
     };
 
     # --- Advanced ---
@@ -123,15 +123,35 @@ in
 
   config = mkIf cfg.enable {
 
-    # Create state and log directories
+    # System users matching what the official postinst creates
+    users.users.himds = {
+      isSystemUser = true;
+      group = "himds";
+      description = "Azure Arc Connected Machine Agent";
+    };
+    users.groups.himds = { };
+
+    users.users.arcproxy = {
+      isSystemUser = true;
+      group = "himds";
+      description = "Azure Arc Proxy Service";
+    };
+
+    # State directories
     systemd.tmpfiles.rules = [
-      "d ${cfg.stateDir} 0750 root root -"
-      "d ${cfg.logDir} 0750 root root -"
+      "d /var/opt/azcmagent 0750 root root -"
+      "d /var/opt/azcmagent/certs 0750 himds himds -"
+      "d /var/opt/azcmagent/log 0750 himds himds -"
+      "d /var/opt/azcmagent/socks 0750 himds himds -"
+      "d /var/opt/azcmagent/tokens 0750 himds himds -"
+      "d /var/lib/GuestConfig 0700 root root -"
+      "d /var/lib/waagent 0700 root root -"
     ];
 
-    # --- Core Agent Service ---
-    systemd.services.azure-arc-agent = {
-      description = "Azure Arc Connected Machine Agent";
+    # --- HIMDS: Core Agent Service ---
+    # Based on actual himdsd.service from the DEB package
+    systemd.services.himdsd = {
+      description = "Azure Connected Machine Agent Service";
       wantedBy = [ "multi-user.target" ];
       after = [ "network-online.target" ];
       wants = [ "network-online.target" ];
@@ -147,22 +167,96 @@ in
 
       serviceConfig = {
         Type = "simple";
-        ExecStart = "${cfg.package}/bin/azcmagent";
+        ExecStart = "${cfg.package}/bin/azcmagent-fhs /opt/azcmagent/bin/himds";
+        TimeoutStartSec = 5;
         Restart = "on-failure";
-        RestartSec = 15;
+        RestartSec = "5s";
+        User = "himds";
+        Group = "himds";
 
-        # Security hardening
-        ProtectSystem = "strict";
-        ReadWritePaths = [
-          cfg.stateDir
-          cfg.logDir
-          "/opt/azcmagent"
-          "/opt/GC_Ext"
-          "/opt/GC_Service"
-          "/var/lib/waagent"
-        ];
+        # Security hardening (matches upstream)
         PrivateTmp = true;
-        NoNewPrivileges = false; # Agent may need to spawn extension processes
+        NoNewPrivileges = true;
+        ProtectSystem = "full";
+        ProtectHome = true;
+        ProtectKernelTunables = true;
+        ProtectKernelModules = true;
+        ProtectControlGroups = true;
+        RestrictNamespaces = "ipc net user uts";
+        MemoryDenyWriteExecute = true;
+        RestrictRealtime = true;
+      };
+    };
+
+    # --- Arc Proxy Service ---
+    # Based on actual arcproxyd.service from the DEB package
+    systemd.services.arcproxyd = {
+      description = "Azure Arc Proxy";
+      wantedBy = [ "multi-user.target" ];
+      after = [ "network-online.target" ];
+      wants = [ "network-online.target" ];
+
+      serviceConfig = {
+        Type = "simple";
+        ExecStart = "${cfg.package}/bin/azcmagent-fhs /opt/azcmagent/bin/arcproxy";
+        TimeoutStartSec = 5;
+        Restart = "on-failure";
+        RestartSec = "5s";
+        User = "arcproxy";
+        Group = "himds";
+
+        PrivateTmp = true;
+        NoNewPrivileges = true;
+        ProtectSystem = "full";
+        ProtectHome = true;
+        ProtectKernelTunables = true;
+        ProtectKernelModules = true;
+        ProtectControlGroups = true;
+        RestrictNamespaces = "ipc net user uts";
+        MemoryDenyWriteExecute = true;
+        RestrictRealtime = true;
+      };
+    };
+
+    # --- Guest Configuration Agent Service ---
+    # Based on gcad.systemd template from GC_Service/GC/service_scripts/
+    systemd.services.gcad = mkIf cfg.guestConfiguration.enable {
+      description = "GC Arc Service";
+      wantedBy = [ "multi-user.target" ];
+      after = [ "network.target" ];
+
+      environment = {
+        HOME = "/var/lib/GuestConfig";
+      };
+
+      serviceConfig = {
+        Type = "simple";
+        ExecStart = "${cfg.package}/bin/azcmagent-fhs /opt/GC_Service/GC/gc_linux_service";
+        TimeoutStartSec = 5;
+        Restart = "always";
+        RestartSec = "10s";
+        TimeoutStopSec = 600;
+        CPUQuota = "5%";
+      };
+    };
+
+    # --- Extension Manager Service ---
+    # Based on extd.systemd template from GC_Ext/GC/service_scripts/
+    systemd.services.extd = mkIf cfg.extensions.enable {
+      description = "Extension Service";
+      wantedBy = [ "multi-user.target" "himdsd.service" ];
+      after = [ "network.target" "himdsd.service" ];
+      requires = [ "himdsd.service" ];
+
+      serviceConfig = {
+        Type = "simple";
+        ExecStart = "${cfg.package}/bin/azcmagent-fhs /opt/GC_Ext/GC/gc_linux_service";
+        TimeoutStartSec = 5;
+        Restart = "always";
+        RestartSec = "10s";
+        TimeoutStopSec = 600;
+        CPUQuota = "5%";
+        KillMode = "process";
       };
     };
 
@@ -198,7 +292,11 @@ in
           export HTTPS_PROXY="${cfg.proxy.url}"
         ''}
 
-        exec sudo ${cfg.package}/bin/azcmagent connect "''${CONNECT_ARGS[@]}"
+        exec sudo ${cfg.package}/bin/azcmagent-fhs /opt/azcmagent/bin/azcmagent connect "''${CONNECT_ARGS[@]}"
+      '')
+
+      (pkgs.writeShellScriptBin "arc-status" ''
+        exec ${cfg.package}/bin/azcmagent-fhs /opt/azcmagent/bin/azcmagent show
       '')
     ];
 

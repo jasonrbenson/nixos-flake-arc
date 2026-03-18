@@ -10,9 +10,9 @@
 , glibc
 , icu
 , curl
-, krb5
 , lttng-ust
 , systemd
+, libgcc
 , agentVersion
 , agentSource
 }:
@@ -35,50 +35,38 @@ let
 
     installPhase = ''
       runHook preInstall
-
-      # Copy the full agent tree preserving structure
       mkdir -p $out
 
-      # Core agent binaries
-      if [ -d opt/azcmagent ]; then
-        cp -r opt/azcmagent $out/opt-azcmagent
-      fi
+      # Core agent binaries (statically linked Go — no patching needed)
+      # Binaries: himds, arcproxy, azcmagent_executable, azcmagent (bash wrapper)
+      cp -r opt/azcmagent $out/azcmagent
 
-      # Guest Configuration extension service
-      if [ -d opt/GC_Ext ]; then
-        cp -r opt/GC_Ext $out/opt-gc-ext
-      fi
-      if [ -d opt/GC_Service ]; then
-        cp -r opt/GC_Service $out/opt-gc-service
-      fi
-      if [ -d opt/DSC ]; then
-        cp -r opt/DSC $out/opt-dsc
-      fi
-
-      # Systemd service units
-      if [ -d lib/systemd ] || [ -d usr/lib/systemd ]; then
-        mkdir -p $out/lib/systemd
-        cp -r lib/systemd/* $out/lib/systemd/ 2>/dev/null || true
-        cp -r usr/lib/systemd/* $out/lib/systemd/ 2>/dev/null || true
-      fi
-
-      # Configuration files
-      if [ -d etc ]; then
-        mkdir -p $out/etc
-        cp -r etc/* $out/etc/ 2>/dev/null || true
-      fi
+      # Guest Configuration service (dynamically linked — needs FHS or patching)
+      # Contains: gc_linux_service, gc_worker, .NET runtime, PowerShell, native libs
+      cp -r opt/GC_Ext $out/GC_Ext
+      cp -r opt/GC_Service $out/GC_Service
 
       runHook postInstall
     '';
 
-    # Catalog what we extracted for analysis
+    # Generate a manifest for debugging and auditing
     postInstall = ''
-      echo "=== Extracted agent contents ===" > $out/MANIFEST.txt
-      find $out -type f | sort >> $out/MANIFEST.txt
-      echo "=== ELF binaries ===" >> $out/MANIFEST.txt
-      find $out -type f -executable | while read f; do
-        file "$f" 2>/dev/null | grep -q ELF && echo "$f" >> $out/MANIFEST.txt || true
-      done
+      {
+        echo "=== azcmagent ${version} extracted contents ==="
+        echo ""
+        echo "--- ELF binaries ---"
+        find $out -type f -executable -exec sh -c 'file "$1" | grep -q ELF && echo "$1"' _ {} \;
+        echo ""
+        echo "--- Shell scripts ---"
+        find $out -name "*.sh" -type f
+        echo ""
+        echo "--- Systemd units ---"
+        find $out -name "*.service" -o -name "*.systemd"
+        echo ""
+        echo "--- Shared libraries ---"
+        find $out -name "*.so*" -type f | head -30
+        echo "..."
+      } > $out/MANIFEST.txt
     '';
 
     meta = with lib; {
@@ -86,58 +74,67 @@ let
       homepage = "https://learn.microsoft.com/en-us/azure/azure-arc/servers/agent-overview";
       license = licenses.unfree;
       platforms = [ "x86_64-linux" "aarch64-linux" ];
-      maintainers = [ ];
     };
   };
 
-  # FHS environment that simulates the filesystem layout the agent expects
+  # FHS environment for the full agent stack
+  #
+  # Why FHS? The core agent binaries (himds, arcproxy, azcmagent_executable) are
+  # statically linked Go and could run without FHS. However:
+  #   1. The GC components (gc_worker, gc_linux_service) are dynamically linked
+  #   2. Extensions download and execute inside /opt/GC_Ext/
+  #   3. Shell scripts reference /opt/azcmagent/ paths
+  #   4. The postinst scripts write systemd units to /lib/systemd/system/
+  #
+  # The FHS env provides a consistent runtime for all components.
   azcmagent-fhs = buildFHSEnv {
-    name = "azcmagent";
-    version = agentVersion;
+    name = "azcmagent-fhs";
 
     targetPkgs = pkgs: [
-      openssl
-      zlib
-      glibc
-      icu
-      curl
-      krb5
-      lttng-ust
-      systemd
+      # Required by GC components (dynamically linked C/C++/.NET)
+      pkgs.openssl
+      pkgs.zlib
+      pkgs.glibc
+      pkgs.icu
+      pkgs.curl
+      pkgs.lttng-ust
+      pkgs.systemd
+      pkgs.libgcc.lib
     ];
 
-    # Bind-mount the agent binaries into FHS-expected locations
     extraBuildCommands = ''
-      # Core agent
-      if [ -d ${azcmagent-unwrapped}/opt-azcmagent ]; then
-        mkdir -p opt/azcmagent
-        cp -r ${azcmagent-unwrapped}/opt-azcmagent/* opt/azcmagent/
-      fi
+      # Core agent → /opt/azcmagent/
+      mkdir -p opt/azcmagent
+      cp -r ${azcmagent-unwrapped}/azcmagent/* opt/azcmagent/
 
-      # Guest Configuration
-      if [ -d ${azcmagent-unwrapped}/opt-gc-ext ]; then
-        mkdir -p opt/GC_Ext
-        cp -r ${azcmagent-unwrapped}/opt-gc-ext/* opt/GC_Ext/
-      fi
-      if [ -d ${azcmagent-unwrapped}/opt-gc-service ]; then
-        mkdir -p opt/GC_Service
-        cp -r ${azcmagent-unwrapped}/opt-gc-service/* opt/GC_Service/
-      fi
-      if [ -d ${azcmagent-unwrapped}/opt-dsc ]; then
-        mkdir -p opt/DSC
-        cp -r ${azcmagent-unwrapped}/opt-dsc/* opt/DSC/
-      fi
+      # Extension Manager → /opt/GC_Ext/
+      mkdir -p opt/GC_Ext
+      cp -r ${azcmagent-unwrapped}/GC_Ext/* opt/GC_Ext/
+
+      # Guest Configuration → /opt/GC_Service/
+      mkdir -p opt/GC_Service
+      cp -r ${azcmagent-unwrapped}/GC_Service/* opt/GC_Service/
+
+      # State directories the agent expects
+      mkdir -p var/opt/azcmagent/{certs,log,socks,tokens}
+      mkdir -p var/lib/GuestConfig
+      mkdir -p var/lib/waagent
+      mkdir -p lib/systemd/system
+      mkdir -p lib/systemd/system.conf.d
+      mkdir -p etc/bash_completion.d
     '';
 
     runScript = "/opt/azcmagent/bin/azcmagent";
-
-    meta = with lib; {
-      description = "Azure Arc Connected Machine Agent (FHS environment)";
-      homepage = "https://learn.microsoft.com/en-us/azure/azure-arc/servers/agent-overview";
-      license = licenses.unfree;
-      platforms = [ "x86_64-linux" "aarch64-linux" ];
-    };
   };
 
 in
-azcmagent-fhs
+{
+  # The unwrapped extracted package (for inspection / debugging)
+  unwrapped = azcmagent-unwrapped;
+
+  # The full FHS-wrapped package (for running the agent)
+  fhs = azcmagent-fhs;
+
+  # Default: expose the FHS-wrapped agent
+  default = azcmagent-fhs;
+}
