@@ -85,6 +85,8 @@ let
       pkgs.lttng-ust
       pkgs.systemd
       pkgs.libgcc.lib
+      # libstdc++.so.6 needed by gc_linux_service and gc_worker
+      pkgs.stdenv.cc.cc.lib
     ];
 
     extraBuildCommands = ''

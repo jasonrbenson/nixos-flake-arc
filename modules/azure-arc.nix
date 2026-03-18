@@ -4,8 +4,6 @@ with lib;
 
 let
   cfg = config.services.azure-arc;
-  # GC components (gcad, extd) are x86_64-only .NET binaries
-  isX86 = pkgs.stdenv.hostPlatform.isx86_64;
 in
 {
   options.services.azure-arc = {
@@ -209,8 +207,7 @@ in
     };
 
     # --- Guest Configuration Agent Service ---
-    # GC components are x86_64-only .NET binaries; skip on aarch64
-    systemd.services.gcad = mkIf (cfg.guestConfiguration.enable && isX86) {
+    systemd.services.gcad = mkIf cfg.guestConfiguration.enable {
       description = "GC Arc Service";
       wantedBy = [ "multi-user.target" ];
       after = [ "network.target" ];
@@ -222,6 +219,7 @@ in
       serviceConfig = {
         Type = "simple";
         ExecStart = "${cfg.package}/bin/azcmagent-fhs /opt/GC_Service/GC/gc_linux_service";
+        WorkingDirectory = "/opt/GC_Service/GC";
         TimeoutStartSec = 5;
         Restart = "always";
         RestartSec = "10s";
@@ -231,8 +229,7 @@ in
     };
 
     # --- Extension Manager Service ---
-    # GC components are x86_64-only .NET binaries; skip on aarch64
-    systemd.services.extd = mkIf (cfg.extensions.enable && isX86) {
+    systemd.services.extd = mkIf cfg.extensions.enable {
       description = "Extension Service";
       wantedBy = [ "multi-user.target" "himdsd.service" ];
       after = [ "network.target" "himdsd.service" ];
@@ -241,6 +238,7 @@ in
       serviceConfig = {
         Type = "simple";
         ExecStart = "${cfg.package}/bin/azcmagent-fhs /opt/GC_Ext/GC/gc_linux_service";
+        WorkingDirectory = "/opt/GC_Ext/GC";
         TimeoutStartSec = 5;
         Restart = "always";
         RestartSec = "10s";
