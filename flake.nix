@@ -38,8 +38,14 @@
     in
     (forAllSystems (system:
       let
-        pkgs-unstable = import nixpkgs-unstable { inherit system; };
-        pkgs-stable = import nixpkgs-stable { inherit system; };
+        pkgs-unstable = import nixpkgs-unstable {
+          inherit system;
+          config.allowUnfree = true;
+        };
+        pkgs-stable = import nixpkgs-stable {
+          inherit system;
+          config.allowUnfree = true;
+        };
 
         # Default to unstable for development
         pkgs = pkgs-unstable;
@@ -115,6 +121,7 @@
             ./tests/vm-config.nix
             {
               nixpkgs.overlays = [ self.overlays.default ];
+              nixpkgs.config.allowUnfree = true;
               networking.hostName = "arc-test-aarch64";
             }
           ];
@@ -127,6 +134,7 @@
             ./tests/vm-config.nix
             {
               nixpkgs.overlays = [ self.overlays.default ];
+              nixpkgs.config.allowUnfree = true;
               networking.hostName = "arc-test-x86-64";
             }
           ];
