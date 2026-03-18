@@ -4,6 +4,8 @@ with lib;
 
 let
   cfg = config.services.azure-arc;
+  # GC components (gcad, extd) are x86_64-only .NET binaries
+  isX86 = pkgs.stdenv.hostPlatform.isx86_64;
 in
 {
   options.services.azure-arc = {
@@ -207,8 +209,8 @@ in
     };
 
     # --- Guest Configuration Agent Service ---
-    # Based on gcad.systemd template from GC_Service/GC/service_scripts/
-    systemd.services.gcad = mkIf cfg.guestConfiguration.enable {
+    # GC components are x86_64-only .NET binaries; skip on aarch64
+    systemd.services.gcad = mkIf (cfg.guestConfiguration.enable && isX86) {
       description = "GC Arc Service";
       wantedBy = [ "multi-user.target" ];
       after = [ "network.target" ];
@@ -229,8 +231,8 @@ in
     };
 
     # --- Extension Manager Service ---
-    # Based on extd.systemd template from GC_Ext/GC/service_scripts/
-    systemd.services.extd = mkIf cfg.extensions.enable {
+    # GC components are x86_64-only .NET binaries; skip on aarch64
+    systemd.services.extd = mkIf (cfg.extensions.enable && isX86) {
       description = "Extension Service";
       wantedBy = [ "multi-user.target" "himdsd.service" ];
       after = [ "network.target" "himdsd.service" ];
