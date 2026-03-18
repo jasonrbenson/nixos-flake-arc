@@ -96,6 +96,8 @@ let
       pkgs.linux-pam
       # gpg needed by extension package signature validation
       pkgs.gnupg
+      # Python 3 needed by extensions (AMA, etc.)
+      pkgs.python3
     ];
 
     extraBuildCommands = ''
