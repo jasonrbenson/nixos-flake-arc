@@ -125,6 +125,16 @@ let
       ln -sf ${systemd}/bin/journalctl $out/usr/bin/journalctl
     '';
 
+    # Bind writable host directories over the read-only /opt paths.
+    # The NixOS module creates these dirs and pre-populates from the package.
+    # bwrap processes args in order; these --bind args come AFTER the
+    # --ro-bind of /opt from the rootfs, so they overlay correctly.
+    extraBwrapArgs = [
+      "--bind /var/opt/azcmagent/opt-azcmagent /opt/azcmagent"
+      "--bind /var/opt/azcmagent/opt-gc-ext /opt/GC_Ext"
+      "--bind /var/opt/azcmagent/opt-gc-service /opt/GC_Service"
+    ];
+
     runScript = execWrapper;
   };
 
@@ -136,6 +146,8 @@ in
   # The full FHS-wrapped package (for running the agent)
   fhs = azcmagent-fhs;
 
-  # Default: expose the FHS-wrapped agent
-  default = azcmagent-fhs;
+  # Default: expose the FHS-wrapped agent with passthru for module access
+  default = azcmagent-fhs // {
+    passthru = { unwrapped = azcmagent-unwrapped; };
+  };
 }

@@ -151,7 +151,38 @@ in
       "d /var/opt/azcmagent/tokens 0755 root root -"
       "d /var/lib/GuestConfig 0700 root root -"
       "d /var/lib/waagent 0700 root root -"
+
+      # Writable directories for extension installs and GC state.
+      # These get bind-mounted OVER the read-only /opt paths inside bwrap,
+      # giving extensions write access while preserving the base binaries.
+      "d /var/opt/azcmagent/opt-azcmagent 0755 root root -"
+      "d /var/opt/azcmagent/opt-gc-ext 0755 root root -"
+      "d /var/opt/azcmagent/opt-gc-service 0755 root root -"
     ];
+
+    # Pre-populate writable /opt overlays from the package.
+    # This runs once after tmpfiles creates the directories. On subsequent boots,
+    # the existing state (with installed extensions) is preserved.
+    systemd.services.azure-arc-init = {
+      description = "Initialize Azure Arc writable overlays";
+      wantedBy = [ "multi-user.target" ];
+      before = [ "himdsd.service" "gcad.service" "extd.service" ];
+      unitConfig.ConditionDirectoryNotEmpty = "!/var/opt/azcmagent/opt-azcmagent/bin";
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        ExecStart = let
+          initScript = pkgs.writeShellScript "azure-arc-init" ''
+            set -euo pipefail
+            echo "Initializing Azure Arc writable overlays from package..."
+            ${pkgs.rsync}/bin/rsync -a --ignore-existing ${cfg.package.passthru.unwrapped}/azcmagent/ /var/opt/azcmagent/opt-azcmagent/
+            ${pkgs.rsync}/bin/rsync -a --ignore-existing ${cfg.package.passthru.unwrapped}/GC_Ext/ /var/opt/azcmagent/opt-gc-ext/
+            ${pkgs.rsync}/bin/rsync -a --ignore-existing ${cfg.package.passthru.unwrapped}/GC_Service/ /var/opt/azcmagent/opt-gc-service/
+            echo "Azure Arc writable overlays initialized."
+          '';
+        in "${initScript}";
+      };
+    };
 
     # --- HIMDS: Core Agent Service ---
     # Based on actual himdsd.service from the DEB package
