@@ -62,6 +62,7 @@ let
   # FHS namespace, e.g.  azcmagent-fhs /opt/azcmagent/bin/himds
   # cd to the binary's directory first so RPATH "." resolves co-located .so files
   execWrapper = writeShellScript "azcmagent-exec" ''
+    export SYSTEMD_IGNORE_CHROOT=1
     cd "$(dirname "$1")" 2>/dev/null || true
     exec "$@"
   '';
