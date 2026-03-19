@@ -137,6 +137,12 @@ let
       "--bind /var/opt/azcmagent/opt-azcmagent /opt/azcmagent"
       "--bind /var/opt/azcmagent/opt-gc-ext /opt/GC_Ext"
       "--bind /var/opt/azcmagent/opt-gc-service /opt/GC_Service"
+      # Extensions (e.g. KeyVault) write systemd units to /etc/systemd/system.
+      # NixOS /etc/systemd/system is read-only (nix store). Redirect writes to
+      # /run/systemd/system which is writable AND in systemd's unit search path,
+      # so daemon-reload + enable work correctly through D-Bus to host PID 1.
+      "--dir /etc/systemd"
+      "--symlink /run/systemd/system /etc/systemd/system"
     ];
 
     runScript = execWrapper;
