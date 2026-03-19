@@ -155,7 +155,7 @@ in
       "d /var/opt/azcmagent/certs 0750 himds himds -"
       "d /var/opt/azcmagent/log 0775 himds himds -"
       "d /var/opt/azcmagent/socks 0750 himds himds -"
-      "d /var/opt/azcmagent/tokens 0750 root himds -"
+      "d /var/opt/azcmagent/tokens 0770 himds himds -"
       "d /var/lib/GuestConfig 0700 root root -"
       "d /var/lib/waagent 0700 root root -"
 
@@ -194,7 +194,7 @@ in
             # Create gc.config files that tell gc_linux_service its mode
             # (the install.sh scripts normally do this)
             echo '{"ServiceType" : "Extension"}' > /var/opt/azcmagent/opt-gc-ext/GC/gc.config
-            echo '{"ServiceType" : "GuestConfiguration"}' > /var/opt/azcmagent/opt-gc-service/GC/gc.config
+            echo '{"ServiceType" : "GCArc"}' > /var/opt/azcmagent/opt-gc-service/GC/gc.config
 
             # Create sockets directories for GC IPC
             mkdir -p /var/opt/azcmagent/opt-gc-ext/GC/sockets
@@ -230,12 +230,11 @@ in
         # This ensures himds can read config files and write logs.
         ExecStartPre = let
           fixPerms = pkgs.writeShellScript "fix-arc-perms" ''
-            chown -R himds:himds /var/opt/azcmagent/certs /var/opt/azcmagent/log /var/opt/azcmagent/socks 2>/dev/null || true
+            chown -R himds:himds /var/opt/azcmagent/certs /var/opt/azcmagent/log /var/opt/azcmagent/socks /var/opt/azcmagent/tokens 2>/dev/null || true
             # agentconfig.json and other config files in the state dir
             find /var/opt/azcmagent -maxdepth 1 -type f -exec chown himds:himds {} + 2>/dev/null || true
-            # Token files created by azcmagent connect (root) — himds needs group-read
-            chgrp himds /var/opt/azcmagent/tokens /var/opt/azcmagent/tokens/*.key 2>/dev/null || true
-            chmod g+r /var/opt/azcmagent/tokens/*.key 2>/dev/null || true
+            # Token .key files — himds needs read+write for challenge-response auth
+            chown himds:himds /var/opt/azcmagent/tokens/*.key 2>/dev/null || true
           '';
         in "+${fixPerms}";
         ExecStart = "${cfg.package}/bin/azcmagent-fhs /opt/azcmagent/bin/himds";
