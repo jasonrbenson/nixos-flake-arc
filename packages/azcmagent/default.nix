@@ -124,9 +124,25 @@ let
 
       # Agent needs systemctl/journalctl for service health checks.
       # targetPkgs provides systemd libs but not the binaries in PATH.
+      # The systemctl wrapper adds --runtime to enable/disable so that
+      # symlinks land in /run/systemd/system/ (writable) instead of
+      # /etc/systemd/system/ (read-only nix store on the host).
       mkdir -p $out/usr/bin
-      ln -sf ${systemd}/bin/systemctl $out/usr/bin/systemctl
       ln -sf ${systemd}/bin/journalctl $out/usr/bin/journalctl
+      cat > $out/usr/bin/systemctl <<'WRAPPER'
+#!/bin/bash
+REAL_SYSTEMCTL="${systemd}/bin/systemctl"
+case "$1" in
+  enable|disable)
+    cmd="$1"; shift
+    exec "$REAL_SYSTEMCTL" "$cmd" --runtime "$@"
+    ;;
+  *)
+    exec "$REAL_SYSTEMCTL" "$@"
+    ;;
+esac
+WRAPPER
+      chmod +x $out/usr/bin/systemctl
     '';
 
     # Bind writable host directories over the read-only /opt paths.
