@@ -491,6 +491,14 @@ in
                 PATCHED=1
                 echo "Patched agent.py dpkg_set in $amadir"
               fi
+
+              # Patch 3: Add --force-depends to dpkg options (skip libc6/ucf/debianutils deps)
+              if [ -f "$AGENT_FILE" ] && ! grep -q 'force-depends' "$AGENT_FILE"; then
+                sed -i 's/--force-overwrite --force-confnew/--force-overwrite --force-confnew --force-depends/' "$AGENT_FILE"
+                find "$amadir" -name 'agent*.pyc' -delete 2>/dev/null || true
+                PATCHED=1
+                echo "Patched agent.py dpkg --force-depends in $amadir"
+              fi
             done
 
             [ "$PATCHED" = "1" ] && echo "AMA patches applied" || echo "No AMA patches needed"
