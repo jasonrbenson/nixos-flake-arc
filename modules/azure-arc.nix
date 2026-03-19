@@ -518,6 +518,21 @@ in
                 PATCHED=1
                 echo "Patched agent.py SettingsDict protected_settings KeyError in $amadir"
               fi
+
+              # Patch 6: Guard HUtilObject._context._seq_no and .save_seq() against None
+              # Without WALinuxAgent, HUtilObject is None; the else branch at enable() line ~935
+              # and save_seq() at line ~966 crash with AttributeError
+              if [ -f "$AGENT_FILE" ] && grep -q 'HUtilObject\._context\._seq_no' "$AGENT_FILE"; then
+                sed -i 's/HUtilObject\._context\._seq_no/(HUtilObject._context._seq_no if HUtilObject and HUtilObject._context else "N\/A")/g' "$AGENT_FILE"
+                PATCHED=1
+                echo "Patched agent.py HUtilObject._context._seq_no guards in $amadir"
+              fi
+              if [ -f "$AGENT_FILE" ] && grep -qP '^\s+HUtilObject\.save_seq\(\)' "$AGENT_FILE"; then
+                sed -i 's/^\(\s*\)HUtilObject\.save_seq()/\1if HUtilObject: HUtilObject.save_seq()/' "$AGENT_FILE"
+                find "$amadir" -name 'agent*.pyc' -delete 2>/dev/null || true
+                PATCHED=1
+                echo "Patched agent.py HUtilObject.save_seq() guard in $amadir"
+              fi
             done
 
             # Patch 4: Set SSL cert paths in /etc/default/azuremonitoragent
