@@ -511,8 +511,9 @@ in
 
               # Patch 5: Fix KeyError on missing 'protected_settings' in SettingsDict
               # Without WALinux HUtil, SettingsDict may lack the key when no protected settings exist
-              if [ -f "$AGENT_FILE" ] && grep -q "SettingsDict\['protected_settings'\]" "$AGENT_FILE"; then
-                sed -i "s/SettingsDict\['protected_settings'\]/SettingsDict.get('protected_settings')/" "$AGENT_FILE"
+              # Only patch the READ side (= SettingsDict[...]), not WRITE side (SettingsDict[...] =)
+              if [ -f "$AGENT_FILE" ] && grep -q "= SettingsDict\['protected_settings'\]" "$AGENT_FILE"; then
+                sed -i "s/= SettingsDict\['protected_settings'\]/= SettingsDict.get('protected_settings')/" "$AGENT_FILE"
                 find "$amadir" -name 'agent*.pyc' -delete 2>/dev/null || true
                 PATCHED=1
                 echo "Patched agent.py SettingsDict protected_settings KeyError in $amadir"
