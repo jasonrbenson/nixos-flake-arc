@@ -190,6 +190,7 @@ in
       # AMA's dpkg writes config files here; postinst uses sed -i on them.
       "d /var/opt/azcmagent/etc-default 0755 root root -"
       "d /var/opt/azcmagent/etc-logrotate-d 0755 root root -"
+      "d /var/opt/azcmagent/usr-share-lintian 0755 root root -"
     ];
 
     # Pre-populate writable /opt overlays from the package.

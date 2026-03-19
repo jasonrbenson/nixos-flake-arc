@@ -126,6 +126,9 @@ let
       mkdir -p $out/etc/default
       mkdir -p $out/etc/logrotate.d
 
+      # Mount point for writable /usr/share/lintian (AMA's deb installs overrides here)
+      mkdir -p $out/usr/share/lintian
+
       # State directories (/var) are NOT placed here because the bwrap
       # rootfs is read-only. Instead, the host's /var is auto-mounted
       # read-write, and systemd.tmpfiles.rules (in the NixOS module)
@@ -221,6 +224,8 @@ SYSTEMCTL_WRAPPER
       # files here and the postinst script uses sed -i on /etc/default/azuremonitoragent.
       "--bind /var/opt/azcmagent/etc-default /etc/default"
       "--bind /var/opt/azcmagent/etc-logrotate-d /etc/logrotate.d"
+      # Writable /usr/share/lintian/ — AMA's deb installs a lintian overrides file.
+      "--bind /var/opt/azcmagent/usr-share-lintian /usr/share/lintian"
       # Extensions (e.g. KeyVault) write systemd units to /etc/systemd/system.
       # NixOS /etc/systemd/system is read-only (nix store). Redirect writes to
       # /run/systemd/system which is writable AND in systemd's unit search path,
