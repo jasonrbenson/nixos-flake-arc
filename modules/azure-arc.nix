@@ -361,6 +361,59 @@ in
       };
     };
 
+    # --- Extension Service Wrapper ---
+    # Safety net: periodically ensures extension-created systemd units are
+    # FHS-wrapped. The primary mechanism is the systemctl daemon-reload
+    # interception in the bwrap sandbox, but this catches edge cases (e.g.,
+    # units created before the wrapper was in place, or after a reboot where
+    # /run/systemd/system/ units need re-patching from boot-time state).
+    systemd.services.arc-ext-fhs-wrapper = {
+      description = "Wrap Azure Arc extension systemd units for FHS sandbox";
+      after = [ "extd.service" ];
+      path = [ pkgs.gnugrep pkgs.coreutils ];
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = let
+          wrapScript = pkgs.writeShellScript "arc-ext-fhs-wrap" ''
+            FHS=/run/current-system/sw/bin/azcmagent-fhs
+            CHANGED=0
+
+            for unit in /run/systemd/system/*.service; do
+              [ -f "$unit" ] || continue
+              # Only patch units with ExecStart pointing to extension binaries
+              grep -q '^ExecStart=/var/lib/waagent/' "$unit" || continue
+              # Skip already-wrapped units
+              grep -q 'azcmagent-fhs' "$unit" && continue
+
+              while IFS= read -r line || [ -n "$line" ]; do
+                case "$line" in
+                  ExecStart=/var/lib/waagent/*)
+                    echo "ExecStart=$FHS ''${line#ExecStart=}" ;;
+                  *)
+                    echo "$line" ;;
+                esac
+              done < "$unit" > "$unit.tmp"
+              mv "$unit.tmp" "$unit"
+              CHANGED=1
+              echo "Wrapped: $unit"
+            done
+
+            [ "$CHANGED" = "1" ] && systemctl daemon-reload || true
+          '';
+        in wrapScript;
+      };
+    };
+
+    # Trigger the wrapper when extension manager installs new extensions.
+    # Uses a systemd timer (every 5 minutes) as a lightweight safety net.
+    systemd.timers.arc-ext-fhs-wrapper = {
+      wantedBy = [ "timers.target" ];
+      timerConfig = {
+        OnBootSec = "2min";
+        OnUnitActiveSec = "5min";
+      };
+    };
+
     # Agent package + connection helper script
     environment.systemPackages = [
       cfg.package

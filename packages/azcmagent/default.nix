@@ -132,18 +132,61 @@ let
       ln -sf ${systemd}/bin/systemctl $out/usr/bin/systemctl
 
       # Override systemctl: remove the symlink, replace with wrapper script.
-      # Extensions call systemctl enable which writes to /etc/systemd/system/
-      # *.wants/ — read-only on NixOS. The wrapper adds --runtime so symlinks
-      # go to /run/systemd/system/ instead.
+      # This wrapper handles two NixOS-specific issues for extensions:
+      #
+      # 1. enable/disable: Adds --runtime so symlinks go to /run/systemd/system/
+      #    instead of /etc/systemd/system/ (read-only nix store on NixOS).
+      #
+      # 2. daemon-reload: Before reloading, scans /run/systemd/system/ for
+      #    extension-created unit files whose ExecStart points at a dynamically
+      #    linked binary in /var/lib/waagent/. These binaries need the FHS
+      #    sandbox to run, so the wrapper prepends azcmagent-fhs to ExecStart.
+      #    This is the generalized fix for Gap 11 — any extension that creates
+      #    a long-running systemd service will automatically be FHS-wrapped.
       rm $out/usr/bin/systemctl
-      tee $out/usr/bin/systemctl > /dev/null <<EOF
+      tee $out/usr/bin/systemctl > /dev/null <<'SYSTEMCTL_WRAPPER'
 #!/usr/bin/env bash
-REAL=${systemd}/bin/systemctl
-case "\$1" in
-  enable|disable) cmd="\$1"; shift; exec "\$REAL" "\$cmd" --runtime "\$@" ;;
-  *) exec "\$REAL" "\$@" ;;
+REAL=REAL_SYSTEMCTL_PLACEHOLDER
+FHS=/run/current-system/sw/bin/azcmagent-fhs
+
+patch_extension_units() {
+  for unit in /run/systemd/system/*.service; do
+    [ -f "$unit" ] || continue
+    # Only patch units with ExecStart in /var/lib/waagent/ (extension binaries)
+    grep -q '^ExecStart=/var/lib/waagent/' "$unit" || continue
+    # Skip if already wrapped
+    grep -q 'azcmagent-fhs' "$unit" || {
+      # Create a temp file with patched ExecStart
+      while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in
+          ExecStart=/var/lib/waagent/*)
+            echo "ExecStart=$FHS ${line#ExecStart=}" ;;
+          *)
+            echo "$line" ;;
+        esac
+      done < "$unit" > "$unit.tmp"
+      mv "$unit.tmp" "$unit"
+    }
+  done
+}
+
+case "$1" in
+  enable|disable)
+    cmd="$1"; shift
+    exec "$REAL" "$cmd" --runtime "$@"
+    ;;
+  daemon-reload)
+    patch_extension_units
+    exec "$REAL" daemon-reload
+    ;;
+  *)
+    exec "$REAL" "$@"
+    ;;
 esac
-EOF
+SYSTEMCTL_WRAPPER
+      # The heredoc is single-quoted so bash doesn't expand variables.
+      # Replace the placeholder with the actual nix store path.
+      sed -i "s|REAL_SYSTEMCTL_PLACEHOLDER|${systemd}/bin/systemctl|" $out/usr/bin/systemctl
       chmod 755 $out/usr/bin/systemctl
     '';
 
