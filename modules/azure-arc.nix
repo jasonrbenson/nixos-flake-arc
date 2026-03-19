@@ -499,7 +499,28 @@ in
                 PATCHED=1
                 echo "Patched agent.py dpkg --force-depends in $amadir"
               fi
+
+              # Patch 4: Add NixOS to SSL cert path mapping in get_ssl_cert_info()
+              # NixOS stores certs at /etc/ssl/certs (same as Debian/Ubuntu)
+              if [ -f "$AGENT_FILE" ] && ! grep -q "'ubuntu', 'debian', 'nixos'" "$AGENT_FILE"; then
+                sed -i "s/for name in \['ubuntu', 'debian'\]:/for name in ['ubuntu', 'debian', 'nixos']:/" "$AGENT_FILE"
+                find "$amadir" -name 'agent*.pyc' -delete 2>/dev/null || true
+                PATCHED=1
+                echo "Patched agent.py SSL cert mapping for NixOS in $amadir"
+              fi
             done
+
+            # Patch 4: Set SSL cert paths in /etc/default/azuremonitoragent
+            # AMA needs these to make TLS connections; NixOS stores certs at /etc/ssl/certs/
+            AMA_DEFAULT="/var/opt/azcmagent/etc-default/azuremonitoragent"
+            if [ -d "/var/opt/azcmagent/etc-default" ] && ! grep -q 'SSL_CERT_DIR=/etc/ssl/certs' "$AMA_DEFAULT" 2>/dev/null; then
+              cat > "$AMA_DEFAULT" << 'SSLEOF'
+export SSL_CERT_DIR=/etc/ssl/certs
+export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+SSLEOF
+              PATCHED=1
+              echo "Set SSL cert paths in $AMA_DEFAULT"
+            fi
 
             [ "$PATCHED" = "1" ] && echo "AMA patches applied" || echo "No AMA patches needed"
           '';
