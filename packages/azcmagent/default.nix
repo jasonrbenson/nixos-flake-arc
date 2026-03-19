@@ -160,7 +160,7 @@ patch_extension_units() {
       while IFS= read -r line || [ -n "$line" ]; do
         case "$line" in
           ExecStart=/var/lib/waagent/*)
-            echo "ExecStart=$FHS ${line#ExecStart=}" ;;
+            echo "ExecStart=$FHS ''${line#ExecStart=}" ;;
           *)
             echo "$line" ;;
         esac
