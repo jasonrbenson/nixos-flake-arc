@@ -318,6 +318,15 @@ az connectedmachine extension create \
   --publisher "Microsoft.Azure.Extensions" \
   --type "CustomScript" \
   --settings '{"commandToExecute": "echo hello from NixOS"}'
+
+# Example: Key Vault Extension (certificate auto-rotation)
+az connectedmachine extension create \
+  --machine-name "$(hostname)" \
+  --resource-group "rg-arc-nixos" \
+  --name "KeyVaultForLinux" \
+  --publisher "Microsoft.Azure.KeyVault" \
+  --type "KeyVaultForLinux" \
+  --settings '{"secretsManagementSettings":{"pollingIntervalInS":"3600","observedCertificates":["https://myvault.vault.azure.net/secrets/mycert"]}}'
 ```
 
 For GCC-High, add `--cloud AzureUSGovernment` or configure `az cloud set`.
@@ -411,6 +420,7 @@ See [test-environment.md](test-environment.md) for detailed setup instructions.
 | `gcad` | Guest Configuration agent | `systemctl status gcad` |
 | `extd` | Extension manager | `systemctl status extd` |
 | `azure-arc-init` | One-shot: initializes writable overlays | `systemctl status azure-arc-init` |
+| `arc-ext-fhs-wrapper` | Timer: patches extension service units for FHS | `systemctl status arc-ext-fhs-wrapper.timer` |
 
 ### Key Log Locations
 
@@ -421,7 +431,7 @@ See [test-environment.md](test-environment.md) for detailed setup instructions.
 
 # Guest Configuration / Extension logs
 /var/lib/GuestConfig/ext_mgr_logs/gc_ext.log    # Extension manager
-/var/lib/GuestConfig/gc_agent_logs/gc_agent.log  # Guest config agent
+/var/lib/GuestConfig/arc_policy_logs/gc_agent.log  # Guest config agent (GCArc mode)
 
 # Journald
 journalctl -u himdsd -f          # Live agent log
@@ -466,6 +476,7 @@ sudo azcmagent-fhs cat /var/lib/waagent/Microsoft.Azure.Extensions.CustomScript-
 | Extension install stuck | extd service not running or crashed | `systemctl restart extd && journalctl -u extd -f` |
 | `azcmagent extension list` fails | CLI tries `systemctl disable/enable` which conflicts with declarative NixOS | Known limitation — use Azure portal or `az connectedmachine extension list` instead |
 | Permission denied in `/opt/` paths | Writable overlay not initialized | `systemctl restart azure-arc-init && systemctl restart himdsd` |
+| Extension service exits 127 | Binary running outside FHS sandbox | Check `arc-ext-fhs-wrapper.timer` is active; run `systemctl start arc-ext-fhs-wrapper` to force patch |
 
 ---
 
@@ -501,38 +512,37 @@ The flake pins a specific agent version. Microsoft's auto-update mechanism is
 intentionally disabled — version changes go through `nix flake update` for
 reproducibility.
 
-### Guest Configuration Non-Functional on Non-Azure VMs
+### Guest Configuration — Correct ServiceType Required
 
-The Guest Configuration agent (`gcad`) requires the Azure Instance Metadata
-Service (IMDS) at `169.254.169.254:80` for VM metadata and MSI tokens. On
-non-Azure Arc-connected machines (e.g., on-premises, UTM/QEMU, other clouds),
-IMDS does not exist and gcad times out on every refresh cycle (2 min × 3
-attempts = 6 min per cycle). Guest Configuration assignments are never pulled
-and policy compliance is never reported.
+The Guest Configuration agent (`gcad`) must use `{"ServiceType": "GCArc"}` in
+its `gc.config` file (not `"GuestConfiguration"`, which is for Azure VMs with
+IMDS). With the correct setting, gcad uses the local himds endpoint for identity
+and tokens, and successfully pulls assignments, runs compliance checks, and
+reports to Azure.
 
-**Impact:** Guest Configuration policies and audit assignments do not function
-on non-Azure Arc machines. This is a limitation of the GC agent, not NixOS.
-**Tracking:** See [Gap 10](gaps-and-findings.md#gap-10-guest-configuration-agent-requires-azure-imds).
+**Note:** This is handled automatically by the NixOS module's init service.
 
-### GC Poll-Based Extension Refresh Requires Auth Key Registration
+### Extension Service Units Need FHS Wrapping
 
-The GC components authenticate to himds's internal MSI endpoint (port 40341)
-using a pre-shared key established during `install.sh`. Our Nix packaging
-doesn't fully replicate this key exchange, so poll-based extension refresh
-fails with `Failed to get the msi authentication key`. Notification-based
-delivery works for most extensions, but extensions requested during a
-notification gap may not be delivered.
+Extensions that create long-running systemd services (e.g., KeyVault's
+`akvvm_service`) ship dynamically linked binaries that fail on NixOS outside
+the FHS sandbox. The module includes an automatic wrapping framework that
+patches these units to run through `azcmagent-fhs`.
 
-**Impact:** Extensions like Key Vault that rely on poll-based refresh may
-get stuck in "Creating" state.
-**Tracking:** See [Gap 9](gaps-and-findings.md#gap-9-gchimds-msi-auth-key-registration-not-replicated).
+**How it works:** The `systemctl` wrapper inside bwrap intercepts `daemon-reload`
+and patches `ExecStart` for extension binaries. A host-side timer
+(`arc-ext-fhs-wrapper.timer`) runs every 5 minutes as a safety net.
+
+**Impact:** Transparent — no manual intervention needed. See
+[extension-compat.md](extension-compat.md#extension-service-wrapping-framework)
+for details.
 
 ### Extension Compatibility
 
 Not all extensions work on NixOS. See [extension-compat.md](extension-compat.md)
-for the full testing matrix. The extension delivery pipeline itself is fully
-functional — failures are due to individual extensions' OS-specific checks,
-IMDS dependencies, or GC auth gaps.
+for the full testing matrix. The extension delivery pipeline and service
+wrapping framework are fully functional — the only extension-specific failure
+is AMA's distro allowlist check (exit 51).
 
 ---
 

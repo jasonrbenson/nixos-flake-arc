@@ -11,10 +11,11 @@ We have built a fully declarative NixOS flake that packages the Azure Connected 
 Agent (v1.61) inside an FHS sandbox, enabling NixOS to be managed by Azure Arc with
 extension support. This proof-of-concept validates that NixOS can run the core Arc agent,
 deploy and execute extensions through the full pipeline (download → GPG validate → install
-→ enable → report), and return results to the Azure portal. CustomScript and MDE extensions
-work end-to-end; AMA is blocked **only** by a Python distro allowlist — not by any platform
-incompatibility. This work defines exactly what Microsoft would need to change for native
-NixOS support.
+→ enable → report), and return results to the Azure portal. CustomScript, MDE, Key Vault,
+and Guest Configuration all work end-to-end. An automatic extension wrapping framework
+handles dynamically linked extension binaries. AMA is blocked **only** by a Python distro
+allowlist — not by any platform incompatibility. This work defines exactly what Microsoft
+would need to change for native NixOS support.
 
 ---
 
@@ -304,15 +305,17 @@ Azure Portal / CLI
 
 | Metric                          | Value                                            |
 |---------------------------------|--------------------------------------------------|
-| Systemd services running        | 4 (`himdsd`, `arcproxyd`, `gcad`, `extd`)        |
-| Extensions tested               | 5                                                |
+| Systemd services running        | 4 core + 1 timer (`himdsd`, `arcproxyd`, `gcad`, `extd`, `arc-ext-fhs-wrapper`) |
+| Extensions tested               | 6                                                |
 | CustomScript                    | ✅ Full success — command executed, output returned |
 | MDE (Defender)                  | ✅ Install + enable succeeded                     |
 | AMA (Azure Monitor)            | ❌ Blocked by distro allowlist only (exit code 51) |
-| Key Vault                       | ⚠️ Not delivered — GC auth key gap                |
-| Guest Configuration             | ❌ IMDS timeout on non-Azure VM                    |
+| Key Vault                       | ✅ Full success — install, enable, service auto-wrapped via FHS framework |
+| Guest Configuration             | ✅ Working — pulls AzureLinuxBaseline, runs compliance, reports to Azure |
+| DSCForLinux                     | ⛔ Not available in USGov region (cloud limitation) |
 | Extension pipeline validated    | ✅ Download → GPG → SHA256 → install → enable → report |
-| Platform-level failures         | **Zero** — all issues are extension-specific (allowlists, IMDS deps, auth gaps) |
+| Extension service wrapping      | ✅ Auto-patches dynamically-linked extension binaries to run in FHS sandbox |
+| Platform-level failures         | **Zero** — all issues are extension-specific (AMA allowlist) |
 | Agent version                   | v1.61.03319.859                                  |
 | Supported architectures (build) | `x86_64-linux`, `aarch64-linux`                  |
 | Validated architecture          | `aarch64-linux` (UTM on macOS)                   |
@@ -356,19 +359,21 @@ Azure Portal / CLI
 
 **"What about Key Vault and Guest Configuration?"**
 
-> We tested both. Key Vault (KeyVaultForLinux v3.5.3041.185) got stuck in
-> "Creating" state — the root cause is a missing GC↔himds auth key registration
-> in our init process. Poll-based extension refresh can't authenticate to the
-> local MSI endpoint. Notification-based delivery works for most extensions, so
-> this is a medium-severity gap we can fix by replicating the auth key setup
-> from `install.sh`.
+> Both work fully on NixOS:
 >
-> Guest Configuration is a harder problem — the gcad agent assumes Azure IMDS
-> (169.254.169.254) is available for metadata and tokens. On non-Azure VMs like
-> our test environment, IMDS doesn't exist and every request times out (6 minutes
-> per cycle). The agent doesn't fall back to the Arc-local himds endpoint. This
-> means Guest Configuration is non-functional on any non-Azure Arc machine — not
-> just NixOS. This may be a bug in gcad that the Product Group should investigate.
+> **Key Vault** (KeyVaultForLinux v3.5.3041.185): Install and enable handlers
+> both succeed (exit 0). The extension creates a systemd service unit for
+> `akvvm_service` — our extension wrapping framework automatically patches this
+> to run inside the FHS sandbox. The service starts successfully; it exits 1
+> only when `observedCertificates` is empty (a config issue — point it at a real
+> Key Vault certificate and the service runs continuously).
+>
+> **Guest Configuration**: The gcad agent pulls policy assignments from Azure
+> Guest Assignment Service (GAS), validates GPG signatures, runs compliance
+> checks (e.g., AzureLinuxBaseline), and reports results back to Azure. This
+> required setting `gc.config` to `{"ServiceType": "GCArc"}` so gcad uses the
+> local himds endpoint for identity and tokens (instead of Azure IMDS, which
+> only exists on Azure VMs). The module handles this automatically.
 
 **"Does this work on x86_64?"**
 

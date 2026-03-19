@@ -47,6 +47,67 @@ with bind mounts into the FHS sandbox mapping to the paths the agent expects.
 declaratively through the flake — update the version in `flake.nix`, run `nix flake update`
 or update the hash, and `nixos-rebuild switch`.
 
+## ADR-005: Extension Service Wrapping Framework
+
+**Status**: Accepted
+**Context**: Some Azure Arc extensions (e.g., KeyVault) create systemd unit files during
+their install handler that execute dynamically linked binaries directly. These binaries
+expect FHS paths (`/lib/ld-linux-aarch64.so.1`) that don't exist on the NixOS host.
+The install handler runs inside bwrap (via extd), but the resulting systemd service
+runs on the host — outside the sandbox.
+
+**Decision**: Automatically intercept and patch extension-created systemd units at two
+levels:
+
+1. **systemctl wrapper (bwrap-side)**: Replace `/usr/bin/systemctl` in the bwrap rootfs
+   with a wrapper that intercepts `daemon-reload`. Before calling the real daemon-reload,
+   it scans `/run/systemd/system/*.service` for units with `ExecStart=/var/lib/waagent/...`
+   and prepends `/run/current-system/sw/bin/azcmagent-fhs` to run the binary in the FHS
+   sandbox.
+
+2. **arc-ext-fhs-wrapper timer (host-side)**: A systemd timer runs every 5 minutes as a
+   safety net, performing the same scan/patch. Catches units created outside the normal
+   install flow.
+
+Additional sub-decisions:
+- `/etc/systemd/system` inside bwrap is symlinked to `/run/systemd/system` so extension
+  install scripts can write unit files to a host-writable path in systemd's search path
+- `systemctl enable/disable` intercepted to add `--runtime` flag (writes to
+  `/run/systemd/system/` instead of read-only `/etc/systemd/system/`)
+- Units in `/run/systemd/system/` don't survive reboot, but extd re-installs extensions
+  on boot, re-triggering the wrapper
+
+**Alternatives Considered**:
+1. **Per-extension NixOS services** — Manually create a NixOS systemd unit for each
+   extension that needs it. More explicit but doesn't scale and breaks when extensions
+   change their binary paths.
+2. **inotify watcher** — Watch `/run/systemd/system/` for new `.service` files. More
+   reactive but adds complexity and a daemon dependency.
+
+**Consequences**:
+- Transparent to extensions — no per-extension configuration needed
+- Any future extension creating a service unit with binaries in `/var/lib/waagent/` is
+  automatically handled
+- 5-minute polling interval means the safety net has a small window where unpatched units
+  could be started (mitigated by the primary daemon-reload interception)
+
+## ADR-006: /run/systemd/system for Extension Units
+
+**Status**: Accepted
+**Context**: Extension install scripts write systemd unit files to `/etc/systemd/system/`.
+On NixOS, `/etc` is managed declaratively and `/etc/systemd/system/` is a symlink chain
+into the read-only nix store.
+
+**Decision**: Inside the bwrap sandbox, create a symlink from `/etc/systemd/system` to
+`/run/systemd/system/` (a host-writable tmpfs directory that is part of systemd's unit
+search path). This lets extension install scripts write unit files normally while the
+files actually land on a writable path the host systemd can read.
+
+**Consequences**:
+- Extension units don't survive reboot (tmpfs) — acceptable because extd re-delivers
+  extensions on boot
+- No modification to the NixOS `/etc` — all changes are inside the bwrap namespace
+
 ---
 
 ## Binary Analysis Notes
