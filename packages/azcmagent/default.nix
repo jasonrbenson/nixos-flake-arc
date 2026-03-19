@@ -121,19 +121,10 @@ let
       # AMA install target — empty directory, filled by dpkg at runtime
       mkdir -p $out/opt/microsoft
 
-      # dpkg database stub — AMA's install handler runs dpkg -i inside bwrap.
-      # The host-side /var/opt/azcmagent/dpkg-db is bind-mounted here at runtime.
-      mkdir -p $out/var/lib/dpkg/info
-      mkdir -p $out/var/lib/dpkg/updates
-      touch $out/var/lib/dpkg/status
-      touch $out/var/lib/dpkg/available
-
-      # AMA config + log directories (writable via host bind mounts)
+      # AMA config directory (bwrap has tmpfs /etc, so this is writable)
       mkdir -p $out/etc/opt/microsoft/azuremonitoragent
-      mkdir -p $out/var/opt/microsoft/azuremonitoragent/log
       mkdir -p $out/etc/default
       mkdir -p $out/etc/logrotate.d
-      mkdir -p $out/run/azuremonitoragent
 
       # State directories (/var) are NOT placed here because the bwrap
       # rootfs is read-only. Instead, the host's /var is auto-mounted
