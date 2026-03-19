@@ -8,7 +8,7 @@ known gaps, root causes, and recommendations for the Azure Arc Product Group.
 Testing was performed on an aarch64 NixOS 26.05 VM running in UTM on macOS, connected to
 Azure Arc in AzureUSGovernment (usgovvirginia).
 
-**Date**: 2026-03-19 (updated — Gaps 9 & 10 resolved)
+**Date**: 2026-03-20 (updated — Gaps 9, 10 & 11 resolved)
 **Agent Version**: 1.61.03319.859
 **Architecture**: aarch64-linux
 
@@ -21,7 +21,7 @@ Azure Arc in AzureUSGovernment (usgovvirginia).
 | **Custom Script** v2.1.14 | Microsoft.Azure.Extensions | ✅ | ✅ | ✅ | ✅ | **Succeeded** | — |
 | **MDE** v1.0.10.0 | Microsoft.Azure.AzureDefenderForServers | ✅ | ✅ | ✅ | ⚠️ | **Enabled** | Needs onboarding blob (config issue, not platform) |
 | **AMA** v1.40.0 | Microsoft.Azure.Monitor | ✅ | ✅ | ❌ Exit 51 | — | **Failed** | Distro allowlist rejects `ID=nixos` |
-| **Key Vault** v3.5.3041.185 | Microsoft.Azure.KeyVault | ✅ | ✅ | ✅ | ⚠️ | **Install/Enable OK** | Install and enable succeed (systemctl wrapper redirects to /run/systemd). The akvvm_service binary is dynamically linked and crashes (exit 127) when systemd tries to run it outside the FHS sandbox. Needs wrapping to run inside bwrap. |
+| **Key Vault** v3.5.3041.185 | Microsoft.Azure.KeyVault | ✅ | ✅ | ✅ | ✅ | **Succeeded** | Empty `observedCertificates` (config, not platform) |
 | **Guest Configuration** (AzureLinuxBaseline) | Microsoft.GuestConfiguration | ✅ | ✅ | ✅ | ✅ | **Working** | Pulls assignments, validates GPG signatures, runs compliance checks, reports to Azure GAS |
 | **DSCForLinux** | Microsoft.OSTCExtensions | — | — | — | — | — | Not available in USGov region |
 
@@ -229,9 +229,9 @@ of the correct value.
 (503 "Service Unavailable"). This is mitigated with an `ExecStartPre` readiness check
 that polls himds for up to 30 seconds before starting gcad/extd.
 
-### Gap 11: Extension Service Binaries Need FHS Wrapping
+### Gap 11: Extension Service Binaries Need FHS Wrapping — ✅ RESOLVED
 
-**Severity**: Medium
+**Severity**: ~~Medium~~ → Resolved
 **Extension**: Key Vault for Linux (KeyVaultForLinux) v3.5.3041.185
 
 **Root Cause**: The KeyVault extension install handler creates a systemd unit
@@ -240,20 +240,32 @@ is dynamically linked (expects `/lib/ld-linux-aarch64.so.1`) and fails with exit
 when host systemd runs it outside the bwrap FHS sandbox. The install and enable steps
 succeed — only the long-running service itself fails.
 
-**Current fix (partial)**:
+**Fix**: A generalized extension wrapping framework with two layers:
+
+1. **systemctl wrapper (bwrap-side)**: Intercepts `daemon-reload` inside the bwrap sandbox.
+   Before calling the real daemon-reload, it scans `/run/systemd/system/*.service` for units
+   with `ExecStart=/var/lib/waagent/...` (extension binaries) and prepends
+   `/run/current-system/sw/bin/azcmagent-fhs` to their `ExecStart`. This is the primary
+   mechanism — it runs during the extension install flow.
+
+2. **arc-ext-fhs-wrapper timer (host-side)**: A systemd timer that runs every 5 minutes as
+   a safety net, performing the same scan/patch for any units that might have been missed.
+
+The framework is generic — any extension that creates a systemd unit with binaries in
+`/var/lib/waagent/` gets automatically wrapped to run inside the FHS sandbox.
+
+**Test results (KeyVault)**:
+- Install handler: exit 0 ✅
+- Enable handler: exit 0 ✅
+- Unit file automatically patched:
+  `ExecStart=/run/current-system/sw/bin/azcmagent-fhs /var/lib/waagent/.../arm64/akvvm_service`
+- Binary runs through FHS sandbox successfully
+- Service exits 1 due to empty `observedCertificates` — a config issue, not a platform issue
+
+**Previous partial fix** (now superseded):
 - `/etc/systemd/system` inside bwrap is symlinked to `/run/systemd/system` (host-writable)
 - `systemctl` wrapper adds `--runtime` to enable/disable (writes to `/run/systemd/system/`)
 - Install script completes successfully (daemon-reload finds unit, enable creates symlink)
-
-**Remaining work**: Modify the systemd unit's `ExecStart` to run the binary through the
-`azcmagent-fhs` wrapper, or create a NixOS systemd service that watches for extension-created
-unit files and wraps their execution. This is a general challenge: any extension that
-creates a long-running service (not just a one-shot handler) needs its binary to run inside
-the FHS sandbox.
-
-**Recommendation to Product Group**: Provide extension install scripts as separate install
-+ runtime stages, so the service binary path can be overridden without modifying the
-extension's install script.
 
 ---
 

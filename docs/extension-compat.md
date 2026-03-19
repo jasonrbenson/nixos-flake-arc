@@ -16,7 +16,7 @@ Testing performed on aarch64 NixOS 26.05, agent v1.61, AzureUSGovernment (usgovv
 | Custom Script | Microsoft.Azure.Extensions | CustomScript | 2.1.14 | ✅ **Full Success** | Native Go binary, no OS checks. Ran commands and returned output to Azure. |
 | MDE | Microsoft.Azure.AzureDefenderForServers | MDE.Linux | 1.0.10.0 | ✅ **Install OK** | Python handler runs. Needs Defender onboarding blob for full activation. No distro check. |
 | AMA | Microsoft.Azure.Monitor | AzureMonitorLinuxAgent | 1.40.0 | ❌ **Blocked** | Exit 51: `UnsupportedOperatingSystem`. Hardcoded distro allowlist rejects `ID=nixos`. |
-| Key Vault | Microsoft.Azure.KeyVault | KeyVaultForLinux | 3.5.3041.185 | ✅ **Install/Enable OK** | Install handler and enable handler both succeed. MSI auth works (token dir fix). systemctl wrapper redirects enable/daemon-reload to `/run/systemd/system/`. The service binary (`akvvm_service`) is dynamically linked and fails (exit 127) when host systemd runs it outside the FHS sandbox — needs a wrapper service. |
+| Key Vault | Microsoft.Azure.KeyVault | KeyVaultForLinux | 3.5.3041.185 | ✅ **Full Success** | Install handler and enable handler both succeed (exit 0). Extension service binary (`akvvm_service`) automatically wrapped to run inside FHS sandbox via the extension wrapping framework. Service exits 1 due to empty `observedCertificates` — a config issue, not a platform issue. |
 | Guest Configuration | Microsoft.GuestConfiguration | ConfigurationforLinux | — | ✅ **Working** | Pulls assignments from Azure GAS, validates GPG signatures, runs compliance checks (AzureLinuxBaseline tested), sends heartbeats. Requires `gc.config` with `{"ServiceType": "GCArc"}` — see [Gap 10](gaps-and-findings.md#gap-10-guest-configuration-agent-servicetype-configuration--resolved). Logs to `arc_policy_logs/gc_agent.log` in GCArc mode. |
 | DSCForLinux | Microsoft.OSTCExtensions | DSCForLinux | — | ⛔ **Unavailable** | Not available in USGov Virginia (cloud/region limitation, not NixOS-related). |
 
@@ -56,16 +56,16 @@ The full extension delivery pipeline has been validated on NixOS:
 - Likely needs kernel audit/eBPF features (NixOS supports both)
 
 ### Key Vault (KeyVaultForLinux)
-- Extension install and enable handlers both succeed (exit code 0)
+- ✅ Extension install and enable handlers both succeed (exit code 0)
 - **Fix applied**: `/etc/systemd/system` inside bwrap is symlinked to `/run/systemd/system`
   so the install script can write the `akvvm_service.service` unit file to a host-writable
   location that systemd's unit search path already includes
 - **Fix applied**: `systemctl` wrapper adds `--runtime` to `enable`/`disable`, writing
   symlinks to `/run/systemd/system/` instead of read-only `/etc/systemd/system/`
-- The `akvvm_service` binary is dynamically linked (aarch64 ELF with `/lib/ld-linux-aarch64.so.1`)
-  and exits 127 when host systemd runs it directly (outside the FHS sandbox)
-- **Remaining gap**: The service needs to be wrapped to execute inside the bwrap FHS sandbox,
-  similar to how the core agent services run
+- ✅ **Resolved**: Extension service wrapping framework automatically patches the unit file's
+  `ExecStart` to run the binary through the `azcmagent-fhs` wrapper. The `akvvm_service`
+  binary now runs inside the FHS sandbox.
+- Service exits 1 due to empty `observedCertificates` — a config issue, not a platform issue
 
 ### Guest Configuration (gcad)
 - ✅ Fully working on Arc-connected machines with `gc.config` ServiceType set to `"GCArc"`
@@ -76,6 +76,42 @@ The full extension delivery pipeline has been validated on NixOS:
 - Fundamentally incompatible with NixOS's declarative update model
 - Would need a shim that translates update requests to `nixos-rebuild`
 - Low priority — NixOS has its own superior update story
+
+## Extension Service Wrapping Framework
+
+Extensions that create long-running systemd services (e.g., KeyVault's `akvvm_service`)
+ship dynamically linked binaries that cannot run directly on NixOS outside the FHS sandbox.
+A generic wrapping framework automatically patches these services:
+
+### How It Works
+
+1. **systemctl wrapper (bwrap-side, primary mechanism)**: When an extension's install script
+   calls `systemctl daemon-reload` inside the bwrap sandbox, the wrapper intercepts the call.
+   Before invoking the real `daemon-reload`, it scans all `*.service` files in
+   `/run/systemd/system/` for units whose `ExecStart` points to a binary under
+   `/var/lib/waagent/` (the extension install directory). For each match, it prepends
+   `/run/current-system/sw/bin/azcmagent-fhs` to the `ExecStart` line, ensuring the binary
+   runs inside the FHS sandbox when systemd starts the unit.
+
+2. **arc-ext-fhs-wrapper timer (host-side, safety net)**: A systemd timer fires every
+   5 minutes and performs the same scan/patch. This catches any units that may have been
+   created or recreated outside the normal install flow (e.g., extension updates, manual
+   restarts).
+
+### Result
+
+Any extension that creates a systemd unit with binaries in `/var/lib/waagent/` is
+automatically wrapped — no per-extension configuration required. The patched unit looks like:
+
+```ini
+ExecStart=/run/current-system/sw/bin/azcmagent-fhs /var/lib/waagent/<extension>/<version>/<binary>
+```
+
+### Validated Extensions
+
+| Extension | Service Unit | Status |
+|---|---|---|
+| Key Vault (KeyVaultForLinux) | `akvvm_service.service` | ✅ Auto-wrapped, runs in FHS sandbox |
 
 ## Testing Protocol
 
