@@ -16,7 +16,7 @@ Testing performed on aarch64 NixOS 26.05, agent v1.61, AzureUSGovernment (usgovv
 | Custom Script | Microsoft.Azure.Extensions | CustomScript | 2.1.14 | ✅ **Full Success** | Native Go binary, no OS checks. Ran commands and returned output to Azure. |
 | MDE | Microsoft.Azure.AzureDefenderForServers | MDE.Linux | 1.0.10.0 | ✅ **Install OK** | Python handler runs. Needs Defender onboarding blob for full activation. No distro check. |
 | AMA | Microsoft.Azure.Monitor | AzureMonitorLinuxAgent | 1.40.0 | ❌ **Blocked** | Exit 51: `UnsupportedOperatingSystem`. Hardcoded distro allowlist rejects `ID=nixos`. |
-| Key Vault | Microsoft.Azure.KeyVault | KeyVaultForLinux | 3.5.3041.185 | ⚠️ **MSI Auth Fixed** | MSI token auth issue resolved (token dir permissions). Extension was previously stuck in "Creating" due to poll-based refresh failure. Now that auth works, needs re-test of full install/enable cycle. |
+| Key Vault | Microsoft.Azure.KeyVault | KeyVaultForLinux | 3.5.3041.185 | ✅ **Install/Enable OK** | Install handler and enable handler both succeed. MSI auth works (token dir fix). systemctl wrapper redirects enable/daemon-reload to `/run/systemd/system/`. The service binary (`akvvm_service`) is dynamically linked and fails (exit 127) when host systemd runs it outside the FHS sandbox — needs a wrapper service. |
 | Guest Configuration | Microsoft.GuestConfiguration | ConfigurationforLinux | — | ✅ **Working** | Pulls assignments from Azure GAS, validates GPG signatures, runs compliance checks (AzureLinuxBaseline tested), sends heartbeats. Requires `gc.config` with `{"ServiceType": "GCArc"}` — see [Gap 10](gaps-and-findings.md#gap-10-guest-configuration-agent-servicetype-configuration--resolved). Logs to `arc_policy_logs/gc_agent.log` in GCArc mode. |
 | DSCForLinux | Microsoft.OSTCExtensions | DSCForLinux | — | ⛔ **Unavailable** | Not available in USGov Virginia (cloud/region limitation, not NixOS-related). |
 
@@ -56,22 +56,21 @@ The full extension delivery pipeline has been validated on NixOS:
 - Likely needs kernel audit/eBPF features (NixOS supports both)
 
 ### Key Vault (KeyVaultForLinux)
-- Extension was not delivered — stuck in "Creating" state in the Azure portal
-- Root cause: GC↔himds MSI auth key exchange is incomplete in our init process
-- The `gc_linux_service` can't authenticate to himds's internal MSI endpoint (port 40341)
-- Error: `Failed to get the msi authentication key`
-- Notification-based delivery works, but KV was requested during a notification gap
-- Poll-based refresh (the fallback) fails without the auth key
-- **Fix needed**: Replicate the auth key registration from `install.sh` in `azure-arc-init`
+- Extension install and enable handlers both succeed (exit code 0)
+- **Fix applied**: `/etc/systemd/system` inside bwrap is symlinked to `/run/systemd/system`
+  so the install script can write the `akvvm_service.service` unit file to a host-writable
+  location that systemd's unit search path already includes
+- **Fix applied**: `systemctl` wrapper adds `--runtime` to `enable`/`disable`, writing
+  symlinks to `/run/systemd/system/` instead of read-only `/etc/systemd/system/`
+- The `akvvm_service` binary is dynamically linked (aarch64 ELF with `/lib/ld-linux-aarch64.so.1`)
+  and exits 127 when host systemd runs it directly (outside the FHS sandbox)
+- **Remaining gap**: The service needs to be wrapped to execute inside the bwrap FHS sandbox,
+  similar to how the core agent services run
 
 ### Guest Configuration (gcad)
-- Assignments are never pulled by the agent
-- Root cause: gcad tries Azure IMDS (169.254.169.254:80) for metadata and MSI tokens
-- On non-Azure VMs, IMDS doesn't exist → 2 min timeout × 3 attempts = 6 min per cycle
-- The agent does **not** fall back to the Arc-local himds endpoint after IMDS failure
-- This is a fundamental limitation: gcad assumes it's running on an Azure VM
-- **Impact**: Guest Configuration is completely non-functional on non-Azure Arc machines
-- This may be a bug in gcad — it should use himds on Arc-connected machines
+- ✅ Fully working on Arc-connected machines with `gc.config` ServiceType set to `"GCArc"`
+- Pulls policy assignments from Azure GAS, validates GPG signatures, runs compliance checks
+- Logs to `arc_policy_logs/gc_agent.log` (not `gc_agent_logs/`) in GCArc mode
 
 ### Azure Update Manager
 - Fundamentally incompatible with NixOS's declarative update model

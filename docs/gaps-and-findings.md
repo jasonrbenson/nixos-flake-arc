@@ -21,7 +21,7 @@ Azure Arc in AzureUSGovernment (usgovvirginia).
 | **Custom Script** v2.1.14 | Microsoft.Azure.Extensions | ✅ | ✅ | ✅ | ✅ | **Succeeded** | — |
 | **MDE** v1.0.10.0 | Microsoft.Azure.AzureDefenderForServers | ✅ | ✅ | ✅ | ⚠️ | **Enabled** | Needs onboarding blob (config issue, not platform) |
 | **AMA** v1.40.0 | Microsoft.Azure.Monitor | ✅ | ✅ | ❌ Exit 51 | — | **Failed** | Distro allowlist rejects `ID=nixos` |
-| **Key Vault** v3.5.3041.185 | Microsoft.Azure.KeyVault | — | — | — | — | ⚠️ **Needs re-test** | MSI auth fixed; token dir permissions corrected. Needs re-test of full install flow. |
+| **Key Vault** v3.5.3041.185 | Microsoft.Azure.KeyVault | ✅ | ✅ | ✅ | ⚠️ | **Install/Enable OK** | Install and enable succeed (systemctl wrapper redirects to /run/systemd). The akvvm_service binary is dynamically linked and crashes (exit 127) when systemd tries to run it outside the FHS sandbox. Needs wrapping to run inside bwrap. |
 | **Guest Configuration** (AzureLinuxBaseline) | Microsoft.GuestConfiguration | ✅ | ✅ | ✅ | ✅ | **Working** | Pulls assignments, validates GPG signatures, runs compliance checks, reports to Azure GAS |
 | **DSCForLinux** | Microsoft.OSTCExtensions | — | — | — | — | — | Not available in USGov region |
 
@@ -228,6 +228,32 @@ of the correct value.
 **Note**: The first timer cycle after boot may fail if himds hasn't loaded its config yet
 (503 "Service Unavailable"). This is mitigated with an `ExecStartPre` readiness check
 that polls himds for up to 30 seconds before starting gcad/extd.
+
+### Gap 11: Extension Service Binaries Need FHS Wrapping
+
+**Severity**: Medium
+**Extension**: Key Vault for Linux (KeyVaultForLinux) v3.5.3041.185
+
+**Root Cause**: The KeyVault extension install handler creates a systemd unit
+(`akvvm_service.service`) that executes the `akvvm_service` binary directly. This binary
+is dynamically linked (expects `/lib/ld-linux-aarch64.so.1`) and fails with exit code 127
+when host systemd runs it outside the bwrap FHS sandbox. The install and enable steps
+succeed — only the long-running service itself fails.
+
+**Current fix (partial)**:
+- `/etc/systemd/system` inside bwrap is symlinked to `/run/systemd/system` (host-writable)
+- `systemctl` wrapper adds `--runtime` to enable/disable (writes to `/run/systemd/system/`)
+- Install script completes successfully (daemon-reload finds unit, enable creates symlink)
+
+**Remaining work**: Modify the systemd unit's `ExecStart` to run the binary through the
+`azcmagent-fhs` wrapper, or create a NixOS systemd service that watches for extension-created
+unit files and wraps their execution. This is a general challenge: any extension that
+creates a long-running service (not just a one-shot handler) needs its binary to run inside
+the FHS sandbox.
+
+**Recommendation to Product Group**: Provide extension install scripts as separate install
++ runtime stages, so the service binary path can be overridden without modifying the
+extension's install script.
 
 ---
 

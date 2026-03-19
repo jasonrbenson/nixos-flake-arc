@@ -94,7 +94,7 @@ Tested on aarch64 NixOS 26.05, Azure Arc agent v1.61, AzureUSGovernment.
 | **Custom Script** v2.1.14 | ✅ | ✅ | Full end-to-end success — runs commands, returns output to Azure |
 | **MDE** v1.0.10.0 | ✅ | ⚠️ | Handler runs; needs Defender onboarding blob for full config |
 | **AMA** v1.40.0 | ❌ | — | Blocked by distro allowlist (`ID=nixos` not recognized) |
-| **Key Vault** v3.5.3041.185 | ⚠️ | — | MSI auth fixed; needs re-test of full install flow |
+| **Key Vault** v3.5.3041.185 | ✅ | Install/Enable OK | Install + enable succeed. Service binary needs FHS wrapping (exit 127). See [Gap 11](docs/gaps-and-findings.md). |
 | **Guest Configuration** | ✅ | ✅ | Pulls assignments, runs compliance checks (AzureLinuxBaseline), reports to Azure |
 | **DSCForLinux** | — | — | Not available in USGov region (cloud limitation) |
 
