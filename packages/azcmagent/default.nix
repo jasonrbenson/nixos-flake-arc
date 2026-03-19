@@ -131,9 +131,12 @@ let
       ln -sf ${systemd}/bin/journalctl $out/usr/bin/journalctl
       ln -sf ${systemd}/bin/systemctl $out/usr/bin/systemctl
 
-      # Override with wrapper in /usr/local/bin (higher PATH precedence).
-      mkdir -p $out/usr/local/bin
-      tee $out/usr/local/bin/systemctl > /dev/null <<EOF
+      # Override systemctl: remove the symlink, replace with wrapper script.
+      # Extensions call systemctl enable which writes to /etc/systemd/system/
+      # *.wants/ — read-only on NixOS. The wrapper adds --runtime so symlinks
+      # go to /run/systemd/system/ instead.
+      rm $out/usr/bin/systemctl
+      tee $out/usr/bin/systemctl > /dev/null <<EOF
 #!/usr/bin/env bash
 REAL=${systemd}/bin/systemctl
 case "\$1" in
@@ -141,7 +144,7 @@ case "\$1" in
   *) exec "\$REAL" "\$@" ;;
 esac
 EOF
-      chmod 755 $out/usr/local/bin/systemctl
+      chmod 755 $out/usr/bin/systemctl
     '';
 
     # Bind writable host directories over the read-only /opt paths.
