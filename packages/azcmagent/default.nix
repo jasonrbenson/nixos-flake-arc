@@ -98,6 +98,8 @@ let
       pkgs.gnupg
       # Python 3 needed by extensions (AMA, etc.)
       pkgs.python3
+      # dpkg needed by AMA to install its internal azuremonitoragent package
+      pkgs.dpkg
     ];
 
     extraBuildCommands = ''
@@ -152,14 +154,14 @@ FHS=/run/current-system/sw/bin/azcmagent-fhs
 patch_extension_units() {
   for unit in /run/systemd/system/*.service; do
     [ -f "$unit" ] || continue
-    # Only patch units with ExecStart in /var/lib/waagent/ (extension binaries)
-    grep -q '^ExecStart=/var/lib/waagent/' "$unit" || continue
+    # Patch units with ExecStart in /var/lib/waagent/ or /opt/microsoft/ (extension binaries)
+    grep -qE '^ExecStart=(/var/lib/waagent/|/opt/microsoft/)' "$unit" || continue
     # Skip if already wrapped
     grep -q 'azcmagent-fhs' "$unit" || {
       # Create a temp file with patched ExecStart
       while IFS= read -r line || [ -n "$line" ]; do
         case "$line" in
-          ExecStart=/var/lib/waagent/*)
+          ExecStart=/var/lib/waagent/*|ExecStart=/opt/microsoft/*)
             echo "ExecStart=$FHS ''${line#ExecStart=}" ;;
           *)
             echo "$line" ;;
@@ -198,6 +200,10 @@ SYSTEMCTL_WRAPPER
       "--bind /var/opt/azcmagent/opt-azcmagent /opt/azcmagent"
       "--bind /var/opt/azcmagent/opt-gc-ext /opt/GC_Ext"
       "--bind /var/opt/azcmagent/opt-gc-service /opt/GC_Service"
+      # Writable /opt/microsoft/ for AMA dpkg install (azuremonitoragent package)
+      "--bind /var/opt/azcmagent/opt-microsoft /opt/microsoft"
+      # Writable dpkg database — AMA's install runs dpkg -i inside the sandbox
+      "--bind /var/opt/azcmagent/dpkg-db /var/lib/dpkg"
       # Extensions (e.g. KeyVault) write systemd units to /etc/systemd/system.
       # NixOS /etc/systemd/system is read-only (nix store). Redirect writes to
       # /run/systemd/system which is writable AND in systemd's unit search path,

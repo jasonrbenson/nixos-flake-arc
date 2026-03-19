@@ -148,6 +148,14 @@ in
       description = "Azure Arc Proxy Service";
     };
 
+    # AMA runs its agent as the syslog user (created by postinst)
+    users.users.syslog = {
+      isSystemUser = true;
+      group = "syslog";
+      description = "Azure Monitor Agent service user";
+    };
+    users.groups.syslog = { };
+
     # State directories — himds-owned for the core agent, root for GC/extensions.
     # The ExecStartPre in himdsd fixes ownership after azcmagent connect (root).
     systemd.tmpfiles.rules = [
@@ -165,6 +173,18 @@ in
       "d /var/opt/azcmagent/opt-azcmagent 0755 root root -"
       "d /var/opt/azcmagent/opt-gc-ext 0755 root root -"
       "d /var/opt/azcmagent/opt-gc-service 0755 root root -"
+
+      # AMA support: writable /opt/microsoft/ for dpkg-installed AMA binaries,
+      # dpkg database, and AMA log/state directories.
+      "d /var/opt/azcmagent/opt-microsoft 0755 root root -"
+      "d /var/opt/azcmagent/dpkg-db 0755 root root -"
+      "d /var/opt/azcmagent/dpkg-db/info 0755 root root -"
+      "d /var/opt/azcmagent/dpkg-db/updates 0755 root root -"
+      "d /var/opt/microsoft 0755 root root -"
+      "d /var/opt/microsoft/azuremonitoragent 0755 root root -"
+      "d /var/opt/microsoft/azuremonitoragent/log 0775 syslog syslog -"
+      "d /run/azuremonitoragent 0755 root root -"
+      "d /etc/opt/microsoft 0755 root root -"
     ];
 
     # Pre-populate writable /opt overlays from the package.
@@ -199,6 +219,14 @@ in
             # Create sockets directories for GC IPC
             mkdir -p /var/opt/azcmagent/opt-gc-ext/GC/sockets
             mkdir -p /var/opt/azcmagent/opt-gc-service/GC/sockets
+
+            # Initialize dpkg database for AMA extension support.
+            # AMA's install handler runs dpkg -i inside bwrap, which needs a
+            # valid dpkg database at /var/lib/dpkg (bind-mounted from host).
+            if [ ! -f /var/opt/azcmagent/dpkg-db/status ]; then
+              touch /var/opt/azcmagent/dpkg-db/status
+              touch /var/opt/azcmagent/dpkg-db/available
+            fi
 
             echo "Azure Arc writable overlays initialized."
           '';
@@ -380,14 +408,14 @@ in
 
             for unit in /run/systemd/system/*.service; do
               [ -f "$unit" ] || continue
-              # Only patch units with ExecStart pointing to extension binaries
-              grep -q '^ExecStart=/var/lib/waagent/' "$unit" || continue
+              # Patch units with ExecStart in /var/lib/waagent/ or /opt/microsoft/
+              grep -qE '^ExecStart=(/var/lib/waagent/|/opt/microsoft/)' "$unit" || continue
               # Skip already-wrapped units
               grep -q 'azcmagent-fhs' "$unit" && continue
 
               while IFS= read -r line || [ -n "$line" ]; do
                 case "$line" in
-                  ExecStart=/var/lib/waagent/*)
+                  ExecStart=/var/lib/waagent/*|ExecStart=/opt/microsoft/*)
                     echo "ExecStart=$FHS ''${line#ExecStart=}" ;;
                   *)
                     echo "$line" ;;
@@ -411,6 +439,65 @@ in
       timerConfig = {
         OnBootSec = "2min";
         OnUnitActiveSec = "5min";
+      };
+    };
+
+    # --- AMA Extension Patcher ---
+    # Patches the Azure Monitor Agent extension after download to:
+    # 1. Add NixOS to the supported distros allowlist
+    # 2. Add NixOS to the dpkg package manager mapping
+    # This runs every 30 seconds — first install attempt will fail (exit 51),
+    # then the patcher patches the files, and a re-deploy succeeds.
+    systemd.services.arc-ama-patcher = {
+      description = "Patch AMA extension for NixOS compatibility";
+      after = [ "extd.service" ];
+      path = [ pkgs.gnused pkgs.gnugrep pkgs.coreutils pkgs.findutils ];
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = let
+          patchScript = pkgs.writeShellScript "arc-ama-patch" ''
+            WAAGENT=/var/lib/waagent
+            PATCHED=0
+
+            for amadir in "$WAAGENT"/Microsoft.Azure.Monitor.AzureMonitorLinuxAgent-*/; do
+              [ -d "$amadir" ] || continue
+
+              # Patch 1: Add NixOS to supported_distros.py (aarch64 and x86_64)
+              DISTRO_FILE="$amadir/ama_tst/modules/install/supported_distros.py"
+              if [ -f "$DISTRO_FILE" ] && ! grep -q "'nixos'" "$DISTRO_FILE"; then
+                # Add nixos to aarch64 dict (after the last rocky entry)
+                sed -i "/supported_dists_aarch64/,/^}/ s/'rocky' : \['8', '9'\] # Rocky/'rocky' : ['8', '9'], # Rocky\n                    'nixos' : ['26'] # NixOS/" "$DISTRO_FILE"
+                # Add nixos to x86_64 dict (after the amzn entry)
+                sed -i "/supported_dists_x86_64/,/^}/ s/'amzn' : \['2', '2023'\] # Amazon Linux 2/'amzn' : ['2', '2023'], # Amazon Linux 2\n                       'nixos' : ['26'] # NixOS/" "$DISTRO_FILE"
+                # Remove cached bytecode
+                find "$amadir" -name 'supported_distros*.pyc' -delete 2>/dev/null || true
+                PATCHED=1
+                echo "Patched supported_distros.py in $amadir"
+              fi
+
+              # Patch 2: Add NixOS to dpkg_set in agent.py
+              AGENT_FILE="$amadir/agent.py"
+              if [ -f "$AGENT_FILE" ] && ! grep -q '"nixos"' "$AGENT_FILE"; then
+                # Add nixos to the dpkg_set (NixOS can use dpkg via the bwrap sandbox)
+                sed -i 's/dpkg_set = set(\["debian", "ubuntu"\])/dpkg_set = set(["debian", "ubuntu", "nixos"])/' "$AGENT_FILE"
+                # Remove cached bytecode
+                find "$amadir" -name 'agent*.pyc' -delete 2>/dev/null || true
+                PATCHED=1
+                echo "Patched agent.py dpkg_set in $amadir"
+              fi
+            done
+
+            [ "$PATCHED" = "1" ] && echo "AMA patches applied" || echo "No AMA patches needed"
+          '';
+        in patchScript;
+      };
+    };
+
+    systemd.timers.arc-ama-patcher = {
+      wantedBy = [ "timers.target" ];
+      timerConfig = {
+        OnBootSec = "30s";
+        OnUnitActiveSec = "30s";
       };
     };
 
