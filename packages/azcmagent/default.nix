@@ -212,6 +212,15 @@ SYSTEMCTL_WRAPPER
       "--bind /var/opt/azcmagent/opt-microsoft /opt/microsoft"
       # Writable dpkg database — AMA's install runs dpkg -i inside the sandbox
       "--bind /var/opt/azcmagent/dpkg-db /var/lib/dpkg"
+      # Writable /etc/opt/microsoft/ for AMA config files installed by dpkg.
+      # The rootfs creates /etc/opt/microsoft/ which bwrap bind-mounts read-only
+      # from the nix store. This explicit --bind (appended AFTER auto-generated
+      # args) shadows the read-only mount with a writable host directory.
+      "--bind /etc/opt/microsoft /etc/opt/microsoft"
+      # Writable /etc/default/ and /etc/logrotate.d/ — AMA's dpkg writes config
+      # files here and the postinst script uses sed -i on /etc/default/azuremonitoragent.
+      "--bind /var/opt/azcmagent/etc-default /etc/default"
+      "--bind /var/opt/azcmagent/etc-logrotate-d /etc/logrotate.d"
       # Extensions (e.g. KeyVault) write systemd units to /etc/systemd/system.
       # NixOS /etc/systemd/system is read-only (nix store). Redirect writes to
       # /run/systemd/system which is writable AND in systemd's unit search path,

@@ -185,6 +185,11 @@ in
       "d /var/opt/microsoft/azuremonitoragent/log 0775 syslog syslog -"
       "d /run/azuremonitoragent 0755 root root -"
       "d /etc/opt/microsoft 0755 root root -"
+      "d /etc/opt/microsoft/azuremonitoragent 0755 root root -"
+      # Writable backing dirs for /etc/default and /etc/logrotate.d inside bwrap.
+      # AMA's dpkg writes config files here; postinst uses sed -i on them.
+      "d /var/opt/azcmagent/etc-default 0755 root root -"
+      "d /var/opt/azcmagent/etc-logrotate-d 0755 root root -"
     ];
 
     # Pre-populate writable /opt overlays from the package.
