@@ -129,20 +129,19 @@ let
       # /etc/systemd/system/ (read-only nix store on the host).
       mkdir -p $out/usr/bin
       ln -sf ${systemd}/bin/journalctl $out/usr/bin/journalctl
-      cat > $out/usr/bin/systemctl <<'WRAPPER'
-#!/bin/bash
-REAL_SYSTEMCTL="${systemd}/bin/systemctl"
-case "$1" in
-  enable|disable)
-    cmd="$1"; shift
-    exec "$REAL_SYSTEMCTL" "$cmd" --runtime "$@"
-    ;;
-  *)
-    exec "$REAL_SYSTEMCTL" "$@"
-    ;;
+      ln -sf ${systemd}/bin/systemctl $out/usr/bin/systemctl
+
+      # Override with wrapper in /usr/local/bin (higher PATH precedence).
+      mkdir -p $out/usr/local/bin
+      tee $out/usr/local/bin/systemctl > /dev/null <<EOF
+#!/usr/bin/env bash
+REAL=${systemd}/bin/systemctl
+case "\$1" in
+  enable|disable) cmd="\$1"; shift; exec "\$REAL" "\$cmd" --runtime "\$@" ;;
+  *) exec "\$REAL" "\$@" ;;
 esac
-WRAPPER
-      chmod +x $out/usr/bin/systemctl
+EOF
+      chmod 755 $out/usr/local/bin/systemctl
     '';
 
     # Bind writable host directories over the read-only /opt paths.
