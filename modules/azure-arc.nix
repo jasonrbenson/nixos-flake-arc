@@ -156,6 +156,17 @@ in
     };
     users.groups.syslog = { };
 
+    # MDE (mdatp) daemon runs as the mdatp user (created by dpkg preinst).
+    # Pre-creating in NixOS because useradd fails inside read-only bwrap sandbox.
+    users.users.mdatp = {
+      isSystemUser = true;
+      group = "mdatp";
+      home = "/var/opt/microsoft/mdatp";
+      shell = "/usr/sbin/nologin";
+      description = "Microsoft Defender for Endpoint service user";
+    };
+    users.groups.mdatp = { };
+
     # State directories — himds-owned for the core agent, root for GC/extensions.
     # The ExecStartPre in himdsd fixes ownership after azcmagent connect (root).
     systemd.tmpfiles.rules = [
