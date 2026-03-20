@@ -819,7 +819,11 @@ nixos_install_mdatp() {\
     cp /opt/microsoft/mdatp/conf/mde_netfilter_v2.socket /run/systemd/system/ 2>/dev/null || true\
     cp /opt/microsoft/mdatp/conf/mde_netfilter_v2.service /run/systemd/system/ 2>/dev/null || true\
     local mdatp_ver=$(dpkg-deb -f "$deb" Version 2>/dev/null || echo "0.0.0")\
-    if ! grep -q "^Package: mdatp$" /var/lib/dpkg/status 2>/dev/null; then\
+    if grep -q "^Package: mdatp$" /var/lib/dpkg/status 2>/dev/null; then\
+        sed -i "/^Package: mdatp$/,/^$/s/^Status:.*/Status: install ok installed/" /var/lib/dpkg/status\
+        sed -i "/^Package: mdatp$/,/^$/s/^Version:.*/Version: $mdatp_ver/" /var/lib/dpkg/status\
+        echo "[NixOS] Updated mdatp dpkg status to installed ($mdatp_ver)"\
+    else\
         cat >> /var/lib/dpkg/status <<MDATP_REG\
 \
 Package: mdatp\
