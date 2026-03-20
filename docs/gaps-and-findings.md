@@ -8,7 +8,7 @@ known gaps, root causes, and recommendations for the Azure Arc Product Group.
 Testing was performed on an aarch64 NixOS 26.05 VM running in UTM on macOS, connected to
 Azure Arc in AzureUSGovernment (usgovvirginia).
 
-**Date**: 2026-03-20 (updated — Gaps 9-11, 13 resolved; Gaps 12, 14 arch limitations; AMA & MDE patched)
+**Date**: 2026-03-20 (updated — Gaps 6, 9-11, 13 resolved; Gaps 12, 14 arch limitations; AMA, MDE, KeyVault, GuestConfig working)
 **Agent Version**: 1.61.03319.859
 **Architecture**: aarch64-linux
 
@@ -20,7 +20,7 @@ Azure Arc in AzureUSGovernment (usgovvirginia).
 |---|---|---|---|---|---|---|---|
 | **Custom Script** v2.1.14 | Microsoft.Azure.Extensions | ✅ | ✅ | ✅ | ✅ | **Succeeded** | — |
 | **AMA** v1.40.0 | Microsoft.Azure.Monitor | ✅ | ✅ | ✅ | ✅ | **Working** | Runtime patcher bypasses distro allowlist; 3 services running |
-| **MDE** v1.0.10.0 | Microsoft.Azure.AzureDefenderForServers | ✅ | ✅ | ✅ | ⏳ | **Patched** | 7 runtime patches applied; reaches apt install step |
+| **MDE** v1.0.10.0 | Microsoft.Azure.AzureDefenderForServers | ✅ | ✅ | ✅ | ✅ | **Working** | 12 runtime patches; mdatp daemon running, engine loaded, defs updating |
 | **Key Vault** v3.5.3041.185 | Microsoft.Azure.KeyVault | ✅ | ✅ | ✅ | ✅ | **Succeeded** | Empty `observedCertificates` (config, not platform) |
 | **ChangeTracking** v2.35.0.0 | Microsoft.Azure.ChangeTrackingAndInventory | ✅ | ✅ | ❌ Exit 126 | — | **Failed** | x86_64 binary only — `Exec format error` on aarch64. **Not NixOS-related.** |
 | **Guest Configuration** (AzureLinuxBaseline) | Microsoft.GuestConfiguration | ✅ | ✅ | ✅ | ✅ | **Working** | Pulls assignments, validates GPG signatures, runs compliance checks, reports to Azure GAS |
@@ -144,37 +144,49 @@ proper permissions after populating writable overlays from the nix store.
 
 **Resolution**: `chmod -R u+w` after rsync in the init service.
 
-### Gap 6: MDE Extension NixOS Compatibility — ⏳ PATCHED (7 Runtime Patches)
+### Gap 6: MDE Extension NixOS Compatibility — ✅ RESOLVED (12 Runtime Patches)
 
-**Severity**: Medium — patched via runtime patcher, testing in progress
+**Severity**: Resolved — mdatp daemon running, engine loaded, definitions updating
 **Extension**: MDE (Microsoft Defender for Endpoint) v1.0.10.0
 
-**Root Cause**: MDE has multiple NixOS incompatibilities across its Python handler and
-bash installer. Unlike AMA (single distro check), MDE needed 7 separate patches:
+**Root Cause**: MDE has multiple NixOS incompatibilities across its Python handler,
+bash installer, and dpkg postinstall script. Required 12 patches across 3 layers:
 
-**Patches applied by `arc-mde-patcher` (10s timer interval)**:
+**Layer 1 — Python handler patches (`arc-mde-patcher` → `MdeExtensionHandler.py`)**:
 
-1. **Distro detection** (`mde_installer.sh`): Inserts `nixos` → `debian` family mapping
-   before the `sles` elif block, so the installer detects NixOS as debian-family.
+4a. **publicSettings None guard**: Adds `is None` check to
+    `get_parameter_from_public_settings()` — on Arc, `publicSettings` is None.
 
-2. **Repo URL mapping** (`mde_installer.sh`): Maps nixos to `ubuntu/24.04` for Microsoft
-   Package Manager (PMC) repository URLs.
+4b. **workspace_id None guard**: Same None guard for `get_security_workspace_id()`.
 
-3. **SSL certs + debug mode** (`PythonRunner.sh`): Exports `SSL_CERT_FILE` and
-   `SSL_CERT_DIR` (NixOS nix-store paths), and sets `MdeExtensionDebugMode=true`.
-
-4a. **publicSettings None guard** (`MdeExtensionHandler.py`): Adds `is None` check to
-    `get_parameter_from_public_settings()` — on Arc (no WALinuxAgent), `publicSettings`
-    is None, causing `TypeError: argument of type 'NoneType' is not iterable`.
-
-4b. **workspace_id None guard** (`MdeExtensionHandler.py`): Same None guard for
-    `get_security_workspace_id()`.
-
-4c. **protectedSettings None guard** (`MdeExtensionHandler.py`): Same None guard for
+4c. **protectedSettings None guard**: Same None guard for
     `get_parameter_from_protected_settings()`.
 
-4d. **Skip publicSettings empty check** (`MdeExtensionHandler.py`): Replaces fatal
-    `throw_and_write_log` with `pass` when publicSettings is empty/None.
+4d. **Skip publicSettings empty check**: Replaces fatal `throw_and_write_log` with `pass`.
+
+**Layer 2 — Bash installer patches (`arc-mde-patcher` → `mde_installer.sh`)**:
+
+1. **Distro detection**: Maps `nixos` → `debian` family (before `sles` elif block).
+
+2. **Repo URL mapping**: Maps nixos to `ubuntu/24.04` for PMC repository URLs.
+
+3. **SSL certs + debug mode** (`PythonRunner.sh`): Exports `SSL_CERT_FILE`/`SSL_CERT_DIR`,
+   sets `MdeExtensionDebugMode=true` to use bundled (patched) installer script.
+
+5. **NixOS install function**: Replaces `apt install mdatp` with `nixos_install_mdatp()`
+   that: downloads deb with `apt-get -d`, extracts with `dpkg --unpack` (skips 3000-line
+   postinst), manually sets up dirs/symlinks/definitions/permissions, installs systemd
+   service to `/run/systemd/system/`, marks package installed in dpkg.
+
+**Layer 3 — FHS sandbox infrastructure (`default.nix`)**:
+
+6. **apt wrapper scripts**: Override compiled-in nix store paths with `-o Dir::Etc=/etc/apt`.
+7. **Fake dpkg registration**: 8 packages (curl, gnupg, libc6, etc.) at version 99.0.0-nixos.
+8. **sudo wrapper**: No-PAM passthrough (bwrap processes already run as root).
+9. **mdatp libraries**: `libcap`, `pcre2`, `acl`, `sqlite` added to `targetPkgs`.
+10. **PATH configuration**: `/usr/bin` first (sudo wrapper), plus `/opt/microsoft/mdatp/bin`.
+11. **WorkingDirectory fix**: systemctl wrapper strips bwrap-only paths from service files.
+12. **mdatp user**: Pre-created in NixOS module (dpkg preinst can't useradd in bwrap).
 
 **Key Discovery — GitHub Script Download**:
 MDE's `MdeInstallerWrapper.py` downloads a newer `mde_installer.sh` from GitHub at
@@ -182,16 +194,18 @@ runtime, saving it as `mde_installer.latest.sh` and using that instead of the bu
 (patched) version. Setting `MdeExtensionDebugMode=true` forces use of the bundled script.
 
 **Key Discovery — install.status Lock**:
-MDE creates an `install.status` lock file that prevents re-enable for 36 minutes
-(TIMEOUT_INSTALL_ACTION=2100s + 60s) after first attempt. Must be manually deleted
-to force re-enable sooner.
+MDE creates an `install.status` lock file that prevents re-enable for 36 minutes.
 
-**Current Status**: Installer reaches `apt -y install curl apt-transport-https gnupg`
-step. `pkgs.apt` added to FHS sandbox. Expected additional blockers: apt repo
-configuration, Microsoft GPG key import, mdatp package installation.
+**Key Discovery — dpkg postinst is impractical to patch**:
+The mdatp `.deb` postinst script is 3000+ lines, writes to many read-only FHS paths
+(`/usr/bin/`, `/lib/systemd/system/`, `/etc/rsyslog.d/`, `/etc/logrotate.d/`), runs
+`set -e` with ERR traps, and pipes all output through `tee | logger` (hiding errors).
+Solution: skip postinst entirely and do essential setup manually.
 
-**Previous incorrect assessment**: Gap 6 originally stated MDE "does not perform a distro
-check." In fact, `mde_installer.sh` has extensive distro detection that fails on NixOS.
+**Current Status**: mdatp v101.26012.0007 (arm64) running on NixOS. Engine loaded,
+definitions updating, real-time protection available (fanotify). Only remaining issue
+is `"missing license"` — needs Defender for Cloud onboarding blob (configuration,
+not a NixOS compatibility issue).
 
 ### Gap 7: Service Startup Race Condition — ✅ MITIGATED
 
