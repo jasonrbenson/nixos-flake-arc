@@ -136,6 +136,18 @@ let
       # Mount point for writable /usr/share/lintian (AMA's deb installs overrides here)
       mkdir -p $out/usr/share/lintian
 
+      # APT infrastructure for MDE package installation.
+      # The rootfs provides the skeleton; writable bind-mounts overlay these
+      # paths so MDE can add Microsoft's repo, GPG keys, and install mdatp.
+      mkdir -p $out/etc/apt/sources.list.d
+      mkdir -p $out/etc/apt/apt.conf.d
+      mkdir -p $out/etc/apt/trusted.gpg.d
+      mkdir -p $out/etc/apt/preferences.d
+      touch $out/etc/apt/sources.list
+
+      # GPG keyrings directory (MDE stores microsoft-prod.gpg here)
+      mkdir -p $out/usr/share/keyrings
+
       # State directories (/var) are NOT placed here because the bwrap
       # rootfs is read-only. Instead, the host's /var is auto-mounted
       # read-write, and systemd.tmpfiles.rules (in the NixOS module)
@@ -233,6 +245,10 @@ SYSTEMCTL_WRAPPER
       "--bind /var/opt/azcmagent/etc-logrotate-d /etc/logrotate.d"
       # Writable /usr/share/lintian/ — AMA's deb installs a lintian overrides file.
       "--bind /var/opt/azcmagent/usr-share-lintian /usr/share/lintian"
+      # Writable /etc/apt/ — MDE installer adds Microsoft repo and GPG keys here.
+      "--bind /var/opt/azcmagent/etc-apt /etc/apt"
+      # Writable /usr/share/keyrings/ — MDE stores microsoft-prod.gpg here.
+      "--bind /var/opt/azcmagent/usr-share-keyrings /usr/share/keyrings"
       # Extensions (e.g. KeyVault) write systemd units to /etc/systemd/system.
       # NixOS /etc/systemd/system is read-only (nix store). Redirect writes to
       # /run/systemd/system which is writable AND in systemd's unit search path,

@@ -191,6 +191,21 @@ in
       "d /var/opt/azcmagent/etc-default 0755 root root -"
       "d /var/opt/azcmagent/etc-logrotate-d 0755 root root -"
       "d /var/opt/azcmagent/usr-share-lintian 0755 root root -"
+
+      # APT support: writable directories for MDE's apt-based mdatp installation.
+      "d /var/opt/azcmagent/etc-apt 0755 root root -"
+      "d /var/opt/azcmagent/etc-apt/sources.list.d 0755 root root -"
+      "d /var/opt/azcmagent/etc-apt/apt.conf.d 0755 root root -"
+      "d /var/opt/azcmagent/etc-apt/trusted.gpg.d 0755 root root -"
+      "d /var/opt/azcmagent/etc-apt/preferences.d 0755 root root -"
+      "f /var/opt/azcmagent/etc-apt/sources.list 0644 root root -"
+      "d /var/opt/azcmagent/usr-share-keyrings 0755 root root -"
+      "d /var/cache/apt 0755 root root -"
+      "d /var/cache/apt/archives 0755 root root -"
+      "d /var/cache/apt/archives/partial 0755 root root -"
+      "d /var/lib/apt 0755 root root -"
+      "d /var/lib/apt/lists 0755 root root -"
+      "d /var/lib/apt/lists/partial 0755 root root -"
     ];
 
     # Pre-populate writable /opt overlays from the package.
@@ -573,6 +588,29 @@ SSLEOF
           patchScript = pkgs.writeShellScript "arc-mde-patch" ''
             WAAGENT=/var/lib/waagent
             PATCHED=0
+
+            # Register MDE prerequisites in dpkg database so the installer
+            # skips 'apt install' for packages already in the FHS sandbox.
+            DPKG_STATUS=/var/opt/azcmagent/dpkg-db/status
+            if [ -f "$DPKG_STATUS" ]; then
+              for pkg in curl gnupg apt-transport-https; do
+                if ! grep -q "^Package: $pkg$" "$DPKG_STATUS" 2>/dev/null; then
+                  cat >> "$DPKG_STATUS" <<DPKG_EOF
+
+Package: $pkg
+Status: install ok installed
+Priority: optional
+Section: utils
+Architecture: all
+Version: 1.0.0-nixos
+Description: Provided by NixOS FHS sandbox
+
+DPKG_EOF
+                  echo "Registered $pkg in dpkg database"
+                  PATCHED=1
+                fi
+              done
+            fi
 
             for mdedir in "$WAAGENT"/Microsoft.Azure.AzureDefenderForServers.MDE.Linux-*/; do
               [ -d "$mdedir" ] || continue
