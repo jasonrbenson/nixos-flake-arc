@@ -8,7 +8,7 @@ known gaps, root causes, and recommendations for the Azure Arc Product Group.
 Testing was performed on an aarch64 NixOS 26.05 VM running in UTM on macOS, connected to
 Azure Arc in AzureUSGovernment (usgovvirginia).
 
-**Date**: 2026-03-20 (updated — Gaps 9, 10 & 11 resolved)
+**Date**: 2026-03-20 (updated — Gaps 9, 10, 11 resolved; Gap 12 added; AMA & MDE patched)
 **Agent Version**: 1.61.03319.859
 **Architecture**: aarch64-linux
 
@@ -19,9 +19,10 @@ Azure Arc in AzureUSGovernment (usgovvirginia).
 | Extension | Publisher | Download | GPG Validate | Install | Enable | Portal State | Root Cause of Failure |
 |---|---|---|---|---|---|---|---|
 | **Custom Script** v2.1.14 | Microsoft.Azure.Extensions | ✅ | ✅ | ✅ | ✅ | **Succeeded** | — |
-| **MDE** v1.0.10.0 | Microsoft.Azure.AzureDefenderForServers | ✅ | ✅ | ✅ | ⚠️ | **Enabled** | Needs onboarding blob (config issue, not platform) |
-| **AMA** v1.40.0 | Microsoft.Azure.Monitor | ✅ | ✅ | ❌ Exit 51 | — | **Failed** | Distro allowlist rejects `ID=nixos` |
+| **AMA** v1.40.0 | Microsoft.Azure.Monitor | ✅ | ✅ | ✅ | ✅ | **Working** | Runtime patcher bypasses distro allowlist; 3 services running |
+| **MDE** v1.0.10.0 | Microsoft.Azure.AzureDefenderForServers | ✅ | ✅ | ✅ | ⏳ | **Patched** | 7 runtime patches applied; reaches apt install step |
 | **Key Vault** v3.5.3041.185 | Microsoft.Azure.KeyVault | ✅ | ✅ | ✅ | ✅ | **Succeeded** | Empty `observedCertificates` (config, not platform) |
+| **ChangeTracking** v2.35.0.0 | Microsoft.Azure.ChangeTrackingAndInventory | ✅ | ✅ | ❌ Exit 126 | — | **Failed** | x86_64 binary only — `Exec format error` on aarch64. **Not NixOS-related.** |
 | **Guest Configuration** (AzureLinuxBaseline) | Microsoft.GuestConfiguration | ✅ | ✅ | ✅ | ✅ | **Working** | Pulls assignments, validates GPG signatures, runs compliance checks, reports to Azure GAS |
 | **DSCForLinux** | Microsoft.OSTCExtensions | — | — | — | — | — | Not available in USGov region |
 
@@ -64,9 +65,9 @@ onboarding blob. **MDE does not perform a distro check.**
 
 ## Known Gaps
 
-### Gap 1: AMA Distro Allowlist (BLOCKING)
+### Gap 1: AMA Distro Allowlist — ✅ RESOLVED (Runtime Patcher)
 
-**Severity**: High — blocks AMA deployment on NixOS
+**Severity**: ~~High~~ → Resolved via runtime patcher
 **Extension**: Azure Monitor Agent (AMA) v1.40.0
 **Error**: Exit code 51 — `UnsupportedOperatingSystem`
 
@@ -88,20 +89,18 @@ supported_dists_aarch64 = {
 }
 ```
 
-NixOS is not in this list. The check happens before any actual installation logic, so
-the extension never gets a chance to run.
+NixOS is not in this list.
 
-**Impact**: AMA is the primary monitoring extension for Azure Arc. Without it, NixOS
-machines cannot send metrics/logs to Azure Monitor via the standard Arc pipeline.
+**Fix**: `arc-ama-patcher` systemd timer (10s interval) patches the downloaded extension
+after it's extracted to `/var/lib/waagent/`. Patches applied:
+1. Adds `'nixos': ['26.05']` to the distro allowlist
+2. Forces dpkg-based installation (bypasses package manager detection)
+3. Uses mdsd binary directly for enable handler (skips systemctl start pattern)
 
-**Recommendation to Product Group**:
-1. Add `'nixos'` to the supported distros list (simplest fix)
-2. Or: Make the distro check a warning rather than a hard block for Arc machines,
-   since the FHS sandbox provides all required dependencies
-3. Or: Allow a `--force-install` flag or extension setting to bypass the check
+**Result**: AMA fully operational with 3 services running (mdsd, amacoreagent, mdsdhelper).
 
-**Workaround**: Modify the downloaded extension's `supported_distros.py` to include
-`'nixos': ['26.05']` after download. This is fragile and breaks on extension updates.
+**Recommendation to Product Group**: Add NixOS to the allowlist natively so the patcher
+is not needed.
 
 ### Gap 2: Missing Tools in FHS Sandbox
 
@@ -145,18 +144,54 @@ proper permissions after populating writable overlays from the nix store.
 
 **Resolution**: `chmod -R u+w` after rsync in the init service.
 
-### Gap 6: MDE Onboarding Configuration
+### Gap 6: MDE Extension NixOS Compatibility — ⏳ PATCHED (7 Runtime Patches)
 
-**Severity**: Low — configuration issue, not platform gap
-**Root Cause**: MDE requires a Defender for Endpoint onboarding blob passed via
-`protectedSettings` during extension creation. Without it, the handler fails with:
-```
-Protected Settings did not decoded
-Failed to configure Microsoft Defender for Endpoint: argument of type 'NoneType' is not iterable
-```
+**Severity**: Medium — patched via runtime patcher, testing in progress
+**Extension**: MDE (Microsoft Defender for Endpoint) v1.0.10.0
 
-**Resolution**: Deploy MDE with onboarding settings from a Defender for Endpoint workspace.
-See [MDE Onboarding](#mde-onboarding-instructions) below.
+**Root Cause**: MDE has multiple NixOS incompatibilities across its Python handler and
+bash installer. Unlike AMA (single distro check), MDE needed 7 separate patches:
+
+**Patches applied by `arc-mde-patcher` (10s timer interval)**:
+
+1. **Distro detection** (`mde_installer.sh`): Inserts `nixos` → `debian` family mapping
+   before the `sles` elif block, so the installer detects NixOS as debian-family.
+
+2. **Repo URL mapping** (`mde_installer.sh`): Maps nixos to `ubuntu/24.04` for Microsoft
+   Package Manager (PMC) repository URLs.
+
+3. **SSL certs + debug mode** (`PythonRunner.sh`): Exports `SSL_CERT_FILE` and
+   `SSL_CERT_DIR` (NixOS nix-store paths), and sets `MdeExtensionDebugMode=true`.
+
+4a. **publicSettings None guard** (`MdeExtensionHandler.py`): Adds `is None` check to
+    `get_parameter_from_public_settings()` — on Arc (no WALinuxAgent), `publicSettings`
+    is None, causing `TypeError: argument of type 'NoneType' is not iterable`.
+
+4b. **workspace_id None guard** (`MdeExtensionHandler.py`): Same None guard for
+    `get_security_workspace_id()`.
+
+4c. **protectedSettings None guard** (`MdeExtensionHandler.py`): Same None guard for
+    `get_parameter_from_protected_settings()`.
+
+4d. **Skip publicSettings empty check** (`MdeExtensionHandler.py`): Replaces fatal
+    `throw_and_write_log` with `pass` when publicSettings is empty/None.
+
+**Key Discovery — GitHub Script Download**:
+MDE's `MdeInstallerWrapper.py` downloads a newer `mde_installer.sh` from GitHub at
+runtime, saving it as `mde_installer.latest.sh` and using that instead of the bundled
+(patched) version. Setting `MdeExtensionDebugMode=true` forces use of the bundled script.
+
+**Key Discovery — install.status Lock**:
+MDE creates an `install.status` lock file that prevents re-enable for 36 minutes
+(TIMEOUT_INSTALL_ACTION=2100s + 60s) after first attempt. Must be manually deleted
+to force re-enable sooner.
+
+**Current Status**: Installer reaches `apt -y install curl apt-transport-https gnupg`
+step. `pkgs.apt` added to FHS sandbox. Expected additional blockers: apt repo
+configuration, Microsoft GPG key import, mdatp package installation.
+
+**Previous incorrect assessment**: Gap 6 originally stated MDE "does not perform a distro
+check." In fact, `mde_installer.sh` has extensive distro detection that fails on NixOS.
 
 ### Gap 7: Service Startup Race Condition — ✅ MITIGATED
 
@@ -267,9 +302,33 @@ The framework is generic — any extension that creates a systemd unit with bina
 - `systemctl` wrapper adds `--runtime` to enable/disable (writes to `/run/systemd/system/`)
 - Install script completes successfully (daemon-reload finds unit, enable creates symlink)
 
----
+### Gap 12: ChangeTracking Extension — No ARM64 Binaries
 
-## FHS Sandbox Dependencies
+**Severity**: Medium — architecture limitation, not NixOS-related
+**Extension**: ChangeTracking-Linux v2.35.0.0
+**Publisher**: Microsoft.Azure.ChangeTrackingAndInventory
+**Error**: Exit code 126 — `cannot execute binary file: Exec format error`
+
+**Root Cause**: The ChangeTracking extension ships only x86_64 (amd64) binaries:
+- `cta_linux_handler`: ELF 64-bit x86_64 Go binary (handler)
+- `change-tracking-retail_0.1.03151.216-1_amd64.deb`: amd64 only
+- `change_tracking_retail-0.1.03151.216-1.x86_64.rpm`: x86_64 only
+
+Our test VM runs aarch64 (Apple Silicon QEMU). Unlike KeyVault (which ships both
+`amd64/akvvm_service` and `arm64/akvvm_service`), ChangeTracking has no arm64 variant.
+
+**Impact**: Cannot test or use ChangeTracking on arm64 NixOS machines. NixOS-specific
+compatibility (distro checks, path issues) is **untested** — the binary fails before any
+NixOS-related code runs.
+
+**Note**: The handler is a Go binary, so once arm64 support is added by Microsoft, it
+may work with our existing extension wrapping framework (like KeyVault does) with
+minimal or no NixOS-specific patches needed.
+
+**Recommendation to Product Group**: Ship arm64 (aarch64) binaries for ChangeTracking.
+KeyVault already demonstrates multi-arch binary shipping for the same extension pipeline.
+
+---
 
 The following packages are required in the `buildFHSEnv` `targetPkgs` for full extension
 support:
@@ -288,6 +347,7 @@ targetPkgs = pkgs: [
   pkgs.linux-pam     # PAM authentication
   pkgs.gnupg         # GPG signature validation
   pkgs.python3       # Extension handlers (AMA, MDE)
+  pkgs.apt           # MDE prerequisite package installation
 ];
 ```
 
@@ -326,9 +386,15 @@ To fully enable MDE on the Arc-connected NixOS machine:
 
 ### Short Term (Extension-Level Fixes)
 1. **Add NixOS to AMA's distro allowlist** — NixOS inside the FHS sandbox provides all
-   dependencies AMA needs. The allowlist check is the only blocker.
+   dependencies AMA needs. The allowlist check is the only blocker. (Currently resolved
+   via runtime patcher, but native support is preferred.)
 2. **Make distro checks configurable** — Allow a `--skip-distro-check` flag or extension
    setting for validated non-standard distros.
+3. **Ship arm64 binaries for ChangeTracking** — KeyVault already demonstrates multi-arch
+   shipping. ChangeTracking should follow the same pattern.
+4. **Fix MDE publicSettings None handling on Arc** — The Python handler assumes
+   `publicSettings` and `protectedSettings` are always present (WALinuxAgent behavior).
+   On Arc, they may be None, causing TypeError crashes.
 
 ### Medium Term (Agent-Level Improvements)
 3. **Document the GC initialization requirements** — The need for `gc.config` (with correct
