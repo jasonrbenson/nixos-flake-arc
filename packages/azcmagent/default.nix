@@ -67,8 +67,9 @@ let
   execWrapper = writeShellScript "azcmagent-exec" ''
     export SYSTEMD_IGNORE_CHROOT=1
     # Ensure /usr/bin is first in PATH so our sudo wrapper (no-PAM passthrough)
-    # is found before /run/wrappers/bin/sudo (NixOS setuid wrapper that needs PAM)
-    export PATH="/usr/bin:/usr/sbin:$PATH"
+    # is found before /run/wrappers/bin/sudo (NixOS setuid wrapper that needs PAM).
+    # Also add mdatp binary paths so 'command -v mdatp' works for MDE verification.
+    export PATH="/usr/bin:/usr/sbin:/opt/microsoft/mdatp/bin:/opt/microsoft/mdatp/sbin:$PATH"
     case "$1" in
       /var/lib/waagent/*) ;; # extension binary — keep CWD from systemd WorkingDirectory
       *) cd "$(dirname "$1")" 2>/dev/null || true ;;
