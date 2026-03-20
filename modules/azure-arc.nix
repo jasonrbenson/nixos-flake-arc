@@ -598,15 +598,21 @@ SSLEOF
               fi
             done
 
-            # Patch 3: Set SSL_CERT_FILE for MDE Python wrapper
-            # The MdeInstallerWrapper.py uses urllib which needs SSL certs
+            # Patch 3: Set SSL_CERT_FILE and force bundled installer script
+            # The MdeInstallerWrapper.py uses urllib which needs SSL certs.
+            # Also set MdeExtensionDebugMode=true to use bundled (patched) mde_installer.sh
+            # instead of downloading latest from GitHub (which would be unpatched).
             WRAPPER_RUNNER="$WAAGENT"/Microsoft.Azure.AzureDefenderForServers.MDE.Linux-*/PythonRunner.sh
             for runner in $WRAPPER_RUNNER; do
               [ -f "$runner" ] || continue
               if ! grep -q 'SSL_CERT_FILE' "$runner"; then
-                sed -i '2i export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt\nexport SSL_CERT_DIR=/etc/ssl/certs' "$runner"
+                sed -i '2i export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt\nexport SSL_CERT_DIR=/etc/ssl/certs\nexport MdeExtensionDebugMode=true' "$runner"
                 PATCHED=1
-                echo "Patched PythonRunner.sh SSL cert paths in $(dirname "$runner")"
+                echo "Patched PythonRunner.sh SSL certs + debug mode in $(dirname "$runner")"
+              elif ! grep -q 'MdeExtensionDebugMode' "$runner"; then
+                sed -i '/SSL_CERT_FILE/a export MdeExtensionDebugMode=true' "$runner"
+                PATCHED=1
+                echo "Patched PythonRunner.sh debug mode in $(dirname "$runner")"
               fi
             done
 
