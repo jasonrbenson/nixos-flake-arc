@@ -796,11 +796,12 @@ nixos_install_mdatp() {\
         return 1\
     fi\
     echo "[NixOS] Extracting $deb (bypassing preinst/postinst scripts)..."\
-    dpkg-deb -x "$deb" / 2>&1\
+    dpkg-deb -x "$deb" / 2>&1 || true\
     if [ ! -f /opt/microsoft/mdatp/sbin/wdavdaemon ]; then\
         echo "[NixOS] ERROR: dpkg-deb extraction failed — wdavdaemon not found"\
         return 1\
     fi\
+    echo "[NixOS] Extraction verified — wdavdaemon present"\
     echo "[NixOS] Manual setup..."\
     mkdir -p /opt/microsoft/mdatp/bin\
     mkdir -p /var/opt/microsoft/mdatp/{definitions.noindex/00000000-0000-0000-0000-000000000000,crash,quarantine,signatures.noindex}\
@@ -841,6 +842,20 @@ MDATP_REG\
     systemctl daemon-reload\
     systemctl enable --runtime mdatp.service 2>/dev/null || true\
     systemctl start mdatp.service 2>/dev/null || true\
+    echo "[NixOS] Waiting for mdatp daemon to start..."\
+    local ready=0\
+    for i in $(seq 1 30); do\
+        if mdatp health > /dev/null 2>&1; then\
+            ready=1\
+            break\
+        fi\
+        sleep 2\
+    done\
+    if [ "$ready" = "1" ]; then\
+        echo "[NixOS] mdatp daemon is ready"\
+    else\
+        echo "[NixOS] mdatp daemon not ready yet (may need more time)"\
+    fi\
     echo "[NixOS] mdatp install complete"\
     return 0\
 }\
