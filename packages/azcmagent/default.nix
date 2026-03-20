@@ -211,17 +211,11 @@ exec "$@"
 SUDO_WRAPPER
       chmod 755 $out/usr/bin/sudo
 
-      # Python 3.13 removed the 'crypt' module (deprecated since 3.11).
-      # Extensions that import it (AMA) fail with "No module named 'crypt'".
-      # Provide a stub that prevents the import error.
-      PYTHON_SITE=$(find $out -path '*/lib/python3.*/site-packages' -type d | head -1)
-      if [ -n "$PYTHON_SITE" ]; then
-        cat > "$PYTHON_SITE/crypt.py" <<'CRYPT_STUB'
-"""Stub for removed crypt module (Python 3.13+). Extensions import this but don't use it."""
-def crypt(word, salt=None):
-    raise NotImplementedError("crypt module removed in Python 3.13")
-CRYPT_STUB
-      fi
+      # Note: Python 3.13 removed the 'crypt' module. AMA logs a non-fatal
+      # "No module named 'crypt'" warning, but it doesn't prevent operation.
+      # The FHS rootfs site-packages is a read-only nix store symlink, so
+      # creating a stub there isn't possible during build. The warning is safe
+      # to ignore — AMA uses crypt only for WALinuxAgent compat on Azure VMs.
 
       # Agent needs systemctl/journalctl for service health checks.
       # targetPkgs provides systemd libs but not the binaries in PATH.
