@@ -562,6 +562,116 @@ SSLEOF
       };
     };
 
+    # MDE extension patcher — patches mde_installer.sh for NixOS compatibility
+    systemd.services.arc-mde-patcher = {
+      description = "Patch MDE extension for NixOS compatibility";
+      after = [ "extd.service" ];
+      path = [ pkgs.gnused pkgs.gnugrep pkgs.coreutils pkgs.findutils ];
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = let
+          patchScript = pkgs.writeShellScript "arc-mde-patch" ''
+            WAAGENT=/var/lib/waagent
+            PATCHED=0
+
+            for mdedir in "$WAAGENT"/Microsoft.Azure.AzureDefenderForServers.MDE.Linux-*/; do
+              [ -d "$mdedir" ] || continue
+              INSTALLER="$mdedir/src/mde_installer.sh"
+              [ -f "$INSTALLER" ] || continue
+
+              # Patch 1: Add nixos to distro family detection
+              # Map nixos to debian family (we have dpkg/apt in the FHS sandbox)
+              if grep -q '"unsupported distro \$DISTRO \$VERSION"' "$INSTALLER" && \
+                 ! grep -q 'DISTRO_FAMILY="debian" # nixos' "$INSTALLER"; then
+                sed -i '/elif \[ "\$DISTRO" = "sles" \]/i\    elif [ "$DISTRO" = "nixos" ]; then\n        DISTRO_FAMILY="debian" # nixos' "$INSTALLER"
+                PATCHED=1
+                echo "Patched mde_installer.sh distro detection in $mdedir"
+              fi
+
+              # Patch 2: Map nixos to ubuntu for PMC repo URL
+              # The installer fetches packages from packages.microsoft.com/config/$DISTRO/$VERSION
+              # NixOS doesn't have a repo there, so we use ubuntu/24.04 (closest match)
+              if ! grep -q 'DISTRO="ubuntu" # nixos' "$INSTALLER"; then
+                sed -i '/DISTRO_FAMILY="debian" # nixos/a\        DISTRO="ubuntu" # nixos\n        SCALED_VERSION="24.04" # nixos\n        VERSION="24.04" # nixos' "$INSTALLER"
+                PATCHED=1
+                echo "Patched mde_installer.sh nixos->ubuntu repo mapping in $mdedir"
+              fi
+            done
+
+            # Patch 3: Set SSL_CERT_FILE and force bundled installer script
+            # The MdeInstallerWrapper.py uses urllib which needs SSL certs.
+            # Also set MdeExtensionDebugMode=true to use bundled (patched) mde_installer.sh
+            # instead of downloading latest from GitHub (which would be unpatched).
+            WRAPPER_RUNNER="$WAAGENT"/Microsoft.Azure.AzureDefenderForServers.MDE.Linux-*/PythonRunner.sh
+            for runner in $WRAPPER_RUNNER; do
+              [ -f "$runner" ] || continue
+              if ! grep -q 'SSL_CERT_FILE' "$runner"; then
+                sed -i '2i export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt\nexport SSL_CERT_DIR=/etc/ssl/certs\nexport MdeExtensionDebugMode=true' "$runner"
+                PATCHED=1
+                echo "Patched PythonRunner.sh SSL certs + debug mode in $(dirname "$runner")"
+              elif ! grep -q 'MdeExtensionDebugMode' "$runner"; then
+                sed -i '/SSL_CERT_FILE/a export MdeExtensionDebugMode=true' "$runner"
+                PATCHED=1
+                echo "Patched PythonRunner.sh debug mode in $(dirname "$runner")"
+              fi
+            done
+
+            # Patch 4: Fix publicSettings None check in MdeExtensionHandler.py
+            # On Arc (no WALinuxAgent), publicSettings key exists but is None.
+            # "in None" throws TypeError. Add None guard in 3 locations.
+            for mdedir in "$WAAGENT"/Microsoft.Azure.AzureDefenderForServers.MDE.Linux-*/; do
+              [ -d "$mdedir" ] || continue
+              HANDLER="$mdedir/src/MdeExtensionHandler.py"
+              [ -f "$HANDLER" ] || continue
+
+              # 4a: get_parameter_from_public_settings (line ~86)
+              if grep -q 'or parameterName not in handlerSettings\["publicSettings"\]' "$HANDLER" && \
+                 ! grep -q 'handlerSettings\["publicSettings"\] is None' "$HANDLER"; then
+                sed -i 's|or parameterName not in handlerSettings\["publicSettings"\]|or handlerSettings["publicSettings"] is None or parameterName not in handlerSettings["publicSettings"]|' "$HANDLER"
+                PATCHED=1
+                echo "Patched MdeExtensionHandler.py publicSettings None guard (get_parameter) in $mdedir"
+              fi
+
+              # 4b: get_security_workspace_id (line ~142)
+              if grep -q 'or SecurityWorkspaceIdParameterName not in handlerSettings\["publicSettings"\]' "$HANDLER" && \
+                 ! grep -q 'handlerSettings\["publicSettings"\] is None or SecurityWorkspaceIdParameterName' "$HANDLER"; then
+                sed -i 's|or SecurityWorkspaceIdParameterName not in handlerSettings\["publicSettings"\]|or handlerSettings["publicSettings"] is None or SecurityWorkspaceIdParameterName not in handlerSettings["publicSettings"]|' "$HANDLER"
+                PATCHED=1
+                echo "Patched MdeExtensionHandler.py publicSettings None guard (workspace_id) in $mdedir"
+              fi
+
+              # 4c: get_parameter_from_protected_settings (line ~98)
+              if grep -q 'or parameterName not in handlerSettings\["protectedSettings"\]' "$HANDLER" && \
+                 ! grep -q 'handlerSettings\["protectedSettings"\] is None' "$HANDLER"; then
+                sed -i 's|or parameterName not in handlerSettings\["protectedSettings"\]|or handlerSettings["protectedSettings"] is None or parameterName not in handlerSettings["protectedSettings"]|' "$HANDLER"
+                PATCHED=1
+                echo "Patched MdeExtensionHandler.py protectedSettings None guard in $mdedir"
+              fi
+
+              # 4d: Skip publicSettings empty check in provision_extension (line ~181)
+              # On Arc, publicSettings is None but all downstream accessors have defaults.
+              # Replace the fatal check with a pass-through so enable proceeds.
+              if grep -q 'throw_and_write_log("Public settings configuration is empty")' "$HANDLER"; then
+                sed -i 's|logutils.throw_and_write_log("Public settings configuration is empty")|pass  # NixOS: skip, downstream has defaults|' "$HANDLER"
+                PATCHED=1
+                echo "Patched MdeExtensionHandler.py: disabled publicSettings empty check in $mdedir"
+              fi
+            done
+
+            [ "$PATCHED" = "1" ] && echo "MDE patches applied" || echo "No MDE patches needed"
+          '';
+        in patchScript;
+      };
+    };
+
+    systemd.timers.arc-mde-patcher = {
+      wantedBy = [ "timers.target" ];
+      timerConfig = {
+        OnBootSec = "10s";
+        OnUnitActiveSec = "10s";
+      };
+    };
+
     # Agent package + connection helper script
     environment.systemPackages = [
       cfg.package

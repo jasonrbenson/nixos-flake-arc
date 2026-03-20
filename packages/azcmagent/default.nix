@@ -100,6 +100,8 @@ let
       pkgs.python3
       # dpkg needed by AMA to install its internal azuremonitoragent package
       pkgs.dpkg
+      # apt needed by MDE installer to set up Microsoft repo and install mdatp
+      pkgs.apt
     ];
 
     extraBuildCommands = ''
