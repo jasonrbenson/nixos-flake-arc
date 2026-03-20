@@ -610,6 +610,47 @@ SSLEOF
               fi
             done
 
+            # Patch 4: Fix publicSettings None check in MdeExtensionHandler.py
+            # On Arc (no WALinuxAgent), publicSettings key exists but is None.
+            # "in None" throws TypeError. Add None guard in 3 locations.
+            for mdedir in "$WAAGENT"/Microsoft.Azure.AzureDefenderForServers.MDE.Linux-*/; do
+              [ -d "$mdedir" ] || continue
+              HANDLER="$mdedir/src/MdeExtensionHandler.py"
+              [ -f "$HANDLER" ] || continue
+
+              # 4a: get_parameter_from_public_settings (line ~86)
+              if grep -q 'or parameterName not in handlerSettings\["publicSettings"\]' "$HANDLER" && \
+                 ! grep -q 'handlerSettings\["publicSettings"\] is None' "$HANDLER"; then
+                sed -i 's|or parameterName not in handlerSettings\["publicSettings"\]|or handlerSettings["publicSettings"] is None or parameterName not in handlerSettings["publicSettings"]|' "$HANDLER"
+                PATCHED=1
+                echo "Patched MdeExtensionHandler.py publicSettings None guard (get_parameter) in $mdedir"
+              fi
+
+              # 4b: get_security_workspace_id (line ~142)
+              if grep -q 'or SecurityWorkspaceIdParameterName not in handlerSettings\["publicSettings"\]' "$HANDLER"; then
+                sed -i 's|or SecurityWorkspaceIdParameterName not in handlerSettings\["publicSettings"\]|or handlerSettings["publicSettings"] is None or SecurityWorkspaceIdParameterName not in handlerSettings["publicSettings"]|' "$HANDLER"
+                PATCHED=1
+                echo "Patched MdeExtensionHandler.py publicSettings None guard (workspace_id) in $mdedir"
+              fi
+
+              # 4c: get_parameter_from_protected_settings (line ~98)
+              if grep -q 'or parameterName not in handlerSettings\["protectedSettings"\]' "$HANDLER" && \
+                 ! grep -q 'handlerSettings\["protectedSettings"\] is None' "$HANDLER"; then
+                sed -i 's|or parameterName not in handlerSettings\["protectedSettings"\]|or handlerSettings["protectedSettings"] is None or parameterName not in handlerSettings["protectedSettings"]|' "$HANDLER"
+                PATCHED=1
+                echo "Patched MdeExtensionHandler.py protectedSettings None guard in $mdedir"
+              fi
+
+              # 4d: provision_extension publicSettings None check (line ~181)
+              # The existing check only tests key presence, not None value
+              if grep -q '"publicSettings" not in handlerSettings:' "$HANDLER" && \
+                 ! grep -q 'handlerSettings.get("publicSettings") is None' "$HANDLER"; then
+                sed -i 's|if "publicSettings" not in handlerSettings:|if "publicSettings" not in handlerSettings or handlerSettings.get("publicSettings") is None:|' "$HANDLER"
+                PATCHED=1
+                echo "Patched MdeExtensionHandler.py provision publicSettings None check in $mdedir"
+              fi
+            done
+
             [ "$PATCHED" = "1" ] && echo "MDE patches applied" || echo "No MDE patches needed"
           '';
         in patchScript;
