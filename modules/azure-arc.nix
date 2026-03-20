@@ -148,6 +148,14 @@ in
       description = "Azure Arc Proxy Service";
     };
 
+    # AMA runs its agent as the syslog user (created by postinst)
+    users.users.syslog = {
+      isSystemUser = true;
+      group = "syslog";
+      description = "Azure Monitor Agent service user";
+    };
+    users.groups.syslog = { };
+
     # State directories — himds-owned for the core agent, root for GC/extensions.
     # The ExecStartPre in himdsd fixes ownership after azcmagent connect (root).
     systemd.tmpfiles.rules = [
@@ -165,6 +173,24 @@ in
       "d /var/opt/azcmagent/opt-azcmagent 0755 root root -"
       "d /var/opt/azcmagent/opt-gc-ext 0755 root root -"
       "d /var/opt/azcmagent/opt-gc-service 0755 root root -"
+
+      # AMA support: writable /opt/microsoft/ for dpkg-installed AMA binaries,
+      # dpkg database, and AMA log/state directories.
+      "d /var/opt/azcmagent/opt-microsoft 0755 root root -"
+      "d /var/opt/azcmagent/dpkg-db 0755 root root -"
+      "d /var/opt/azcmagent/dpkg-db/info 0755 root root -"
+      "d /var/opt/azcmagent/dpkg-db/updates 0755 root root -"
+      "d /var/opt/microsoft 0755 root root -"
+      "d /var/opt/microsoft/azuremonitoragent 0755 root root -"
+      "d /var/opt/microsoft/azuremonitoragent/log 0775 syslog syslog -"
+      "d /run/azuremonitoragent 0755 root root -"
+      "d /etc/opt/microsoft 0755 root root -"
+      "d /etc/opt/microsoft/azuremonitoragent 0755 root root -"
+      # Writable backing dirs for /etc/default and /etc/logrotate.d inside bwrap.
+      # AMA's dpkg writes config files here; postinst uses sed -i on them.
+      "d /var/opt/azcmagent/etc-default 0755 root root -"
+      "d /var/opt/azcmagent/etc-logrotate-d 0755 root root -"
+      "d /var/opt/azcmagent/usr-share-lintian 0755 root root -"
     ];
 
     # Pre-populate writable /opt overlays from the package.
@@ -199,6 +225,14 @@ in
             # Create sockets directories for GC IPC
             mkdir -p /var/opt/azcmagent/opt-gc-ext/GC/sockets
             mkdir -p /var/opt/azcmagent/opt-gc-service/GC/sockets
+
+            # Initialize dpkg database for AMA extension support.
+            # AMA's install handler runs dpkg -i inside bwrap, which needs a
+            # valid dpkg database at /var/lib/dpkg (bind-mounted from host).
+            if [ ! -f /var/opt/azcmagent/dpkg-db/status ]; then
+              touch /var/opt/azcmagent/dpkg-db/status
+              touch /var/opt/azcmagent/dpkg-db/available
+            fi
 
             echo "Azure Arc writable overlays initialized."
           '';
@@ -380,14 +414,14 @@ in
 
             for unit in /run/systemd/system/*.service; do
               [ -f "$unit" ] || continue
-              # Only patch units with ExecStart pointing to extension binaries
-              grep -q '^ExecStart=/var/lib/waagent/' "$unit" || continue
+              # Patch units with ExecStart in /var/lib/waagent/ or /opt/microsoft/
+              grep -qE '^ExecStart=(/var/lib/waagent/|/opt/microsoft/)' "$unit" || continue
               # Skip already-wrapped units
               grep -q 'azcmagent-fhs' "$unit" && continue
 
               while IFS= read -r line || [ -n "$line" ]; do
                 case "$line" in
-                  ExecStart=/var/lib/waagent/*)
+                  ExecStart=/var/lib/waagent/*|ExecStart=/opt/microsoft/*)
                     echo "ExecStart=$FHS ''${line#ExecStart=}" ;;
                   *)
                     echo "$line" ;;
@@ -411,6 +445,120 @@ in
       timerConfig = {
         OnBootSec = "2min";
         OnUnitActiveSec = "5min";
+      };
+    };
+
+    # --- AMA Extension Patcher ---
+    # Patches the Azure Monitor Agent extension after download to:
+    # 1. Add NixOS to the supported distros allowlist
+    # 2. Add NixOS to the dpkg package manager mapping
+    # This runs every 30 seconds — first install attempt will fail (exit 51),
+    # then the patcher patches the files, and a re-deploy succeeds.
+    systemd.services.arc-ama-patcher = {
+      description = "Patch AMA extension for NixOS compatibility";
+      after = [ "extd.service" ];
+      path = [ pkgs.gnused pkgs.gnugrep pkgs.coreutils pkgs.findutils ];
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = let
+          patchScript = pkgs.writeShellScript "arc-ama-patch" ''
+            WAAGENT=/var/lib/waagent
+            PATCHED=0
+
+            for amadir in "$WAAGENT"/Microsoft.Azure.Monitor.AzureMonitorLinuxAgent-*/; do
+              [ -d "$amadir" ] || continue
+
+              # Patch 1: Add NixOS to supported_distros.py (aarch64 and x86_64)
+              DISTRO_FILE="$amadir/ama_tst/modules/install/supported_distros.py"
+              if [ -f "$DISTRO_FILE" ] && ! grep -q "'nixos'" "$DISTRO_FILE"; then
+                # Add nixos to aarch64 dict (after the last rocky entry)
+                sed -i "/supported_dists_aarch64/,/^}/ s/'rocky' : \['8', '9'\] # Rocky/'rocky' : ['8', '9'], # Rocky\n                    'nixos' : ['26'] # NixOS/" "$DISTRO_FILE"
+                # Add nixos to x86_64 dict (after the amzn entry)
+                sed -i "/supported_dists_x86_64/,/^}/ s/'amzn' : \['2', '2023'\] # Amazon Linux 2/'amzn' : ['2', '2023'], # Amazon Linux 2\n                       'nixos' : ['26'] # NixOS/" "$DISTRO_FILE"
+                # Remove cached bytecode
+                find "$amadir" -name 'supported_distros*.pyc' -delete 2>/dev/null || true
+                PATCHED=1
+                echo "Patched supported_distros.py in $amadir"
+              fi
+
+              # Patch 2: Add NixOS to dpkg_set in agent.py
+              AGENT_FILE="$amadir/agent.py"
+              if [ -f "$AGENT_FILE" ] && ! grep -q '"nixos"' "$AGENT_FILE"; then
+                # Add nixos to the dpkg_set (NixOS can use dpkg via the bwrap sandbox)
+                sed -i 's/dpkg_set = set(\["debian", "ubuntu"\])/dpkg_set = set(["debian", "ubuntu", "nixos"])/' "$AGENT_FILE"
+                # Remove cached bytecode
+                find "$amadir" -name 'agent*.pyc' -delete 2>/dev/null || true
+                PATCHED=1
+                echo "Patched agent.py dpkg_set in $amadir"
+              fi
+
+              # Patch 3: Add --force-depends to dpkg options (skip libc6/ucf/debianutils deps)
+              if [ -f "$AGENT_FILE" ] && ! grep -q 'force-depends' "$AGENT_FILE"; then
+                sed -i 's/--force-overwrite --force-confnew/--force-overwrite --force-confnew --force-depends/' "$AGENT_FILE"
+                find "$amadir" -name 'agent*.pyc' -delete 2>/dev/null || true
+                PATCHED=1
+                echo "Patched agent.py dpkg --force-depends in $amadir"
+              fi
+
+              # Patch 4: Add NixOS to SSL cert path mapping in get_ssl_cert_info()
+              # NixOS stores certs at /etc/ssl/certs (same as Debian/Ubuntu)
+              if [ -f "$AGENT_FILE" ] && ! grep -q "'ubuntu', 'debian', 'nixos'" "$AGENT_FILE"; then
+                sed -i "s/for name in \['ubuntu', 'debian'\]:/for name in ['ubuntu', 'debian', 'nixos']:/" "$AGENT_FILE"
+                find "$amadir" -name 'agent*.pyc' -delete 2>/dev/null || true
+                PATCHED=1
+                echo "Patched agent.py SSL cert mapping for NixOS in $amadir"
+              fi
+
+              # Patch 5: Fix KeyError on missing 'protected_settings' in SettingsDict
+              # Without WALinux HUtil, SettingsDict may lack the key when no protected settings exist
+              # Only patch the READ side (= SettingsDict[...]), not WRITE side (SettingsDict[...] =)
+              if [ -f "$AGENT_FILE" ] && grep -q "= SettingsDict\['protected_settings'\]" "$AGENT_FILE"; then
+                sed -i "s/= SettingsDict\['protected_settings'\]/= SettingsDict.get('protected_settings')/" "$AGENT_FILE"
+                find "$amadir" -name 'agent*.pyc' -delete 2>/dev/null || true
+                PATCHED=1
+                echo "Patched agent.py SettingsDict protected_settings KeyError in $amadir"
+              fi
+
+              # Patch 6: Guard HUtilObject._context._seq_no and .save_seq() against None
+              # Without WALinuxAgent, HUtilObject is None; the else branch at enable() line ~935
+              # and save_seq() at line ~966 crash with AttributeError
+              # Check for unpatched form: "+ HUtilObject._context._seq_no +" (not wrapped in parens)
+              if [ -f "$AGENT_FILE" ] && grep -q '"+ HUtilObject\._context\._seq_no +"' "$AGENT_FILE"; then
+                sed -i 's/"+ HUtilObject\._context\._seq_no +"/"+ (HUtilObject._context._seq_no if HUtilObject and HUtilObject._context else "N\/A") +"/g' "$AGENT_FILE"
+                PATCHED=1
+                echo "Patched agent.py HUtilObject._context._seq_no guards in $amadir"
+              fi
+              if [ -f "$AGENT_FILE" ] && grep -qP '^\s+HUtilObject\.save_seq\(\)' "$AGENT_FILE"; then
+                sed -i 's/^\(\s*\)HUtilObject\.save_seq()/\1if HUtilObject: HUtilObject.save_seq()/' "$AGENT_FILE"
+                find "$amadir" -name 'agent*.pyc' -delete 2>/dev/null || true
+                PATCHED=1
+                echo "Patched agent.py HUtilObject.save_seq() guard in $amadir"
+              fi
+            done
+
+            # Patch 4: Set SSL cert paths in /etc/default/azuremonitoragent
+            # AMA needs these to make TLS connections; NixOS stores certs at /etc/ssl/certs/
+            AMA_DEFAULT="/var/opt/azcmagent/etc-default/azuremonitoragent"
+            if [ -d "/var/opt/azcmagent/etc-default" ] && ! grep -q 'SSL_CERT_DIR=/etc/ssl/certs' "$AMA_DEFAULT" 2>/dev/null; then
+              cat > "$AMA_DEFAULT" << 'SSLEOF'
+export SSL_CERT_DIR=/etc/ssl/certs
+export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+SSLEOF
+              PATCHED=1
+              echo "Set SSL cert paths in $AMA_DEFAULT"
+            fi
+
+            [ "$PATCHED" = "1" ] && echo "AMA patches applied" || echo "No AMA patches needed"
+          '';
+        in patchScript;
+      };
+    };
+
+    systemd.timers.arc-ama-patcher = {
+      wantedBy = [ "timers.target" ];
+      timerConfig = {
+        OnBootSec = "30s";
+        OnUnitActiveSec = "30s";
       };
     };
 
