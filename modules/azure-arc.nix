@@ -593,7 +593,7 @@ SSLEOF
             mkdir -p /var/lib/apt/lists/partial
 
             if [ -f "$DPKG_STATUS" ]; then
-              for pkg in curl gnupg apt-transport-https; do
+              for pkg in curl gnupg apt-transport-https libc6 ucf debianutils logrotate; do
                 if ! grep -q "^Package: $pkg$" "$DPKG_STATUS" 2>/dev/null; then
                   cat >> "$DPKG_STATUS" <<DPKG_EOF
 
@@ -601,6 +601,7 @@ Package: $pkg
 Status: install ok installed
 Priority: optional
 Section: utils
+Maintainer: NixOS FHS Sandbox
 Architecture: all
 Version: 1.0.0-nixos
 Description: Provided by NixOS FHS sandbox
@@ -610,6 +611,13 @@ DPKG_EOF
                   PATCHED=1
                 fi
               done
+
+              # Fix azureotelcollector half-installed state (AMA leftover)
+              if grep -q 'Status: install reinstreq half-installed' "$DPKG_STATUS" 2>/dev/null; then
+                sed -i 's/Status: install reinstreq half-installed/Status: purge ok not-installed/' "$DPKG_STATUS"
+                echo "Fixed azureotelcollector half-installed state"
+                PATCHED=1
+              fi
             fi
 
             for mdedir in "$WAAGENT"/Microsoft.Azure.AzureDefenderForServers.MDE.Linux-*/; do
