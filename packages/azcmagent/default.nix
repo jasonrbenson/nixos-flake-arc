@@ -108,6 +108,10 @@ let
       pkgs.dpkg
       # apt needed by MDE installer to set up Microsoft repo and install mdatp
       pkgs.apt
+      # iptables needed by mdatp (Microsoft Defender) for network filtering
+      pkgs.iptables
+      # util-linux needed by mdatp's dpkg scripts (logger, mount commands)
+      pkgs.util-linux
     ];
 
     extraBuildCommands = ''
@@ -162,6 +166,7 @@ exec ${apt}/bin/$cmd \
   -o Dir::Etc="/etc/apt" \
   -o Dir::State="/var/lib/apt" \
   -o Dir::Cache="/var/cache/apt" \
+  -o Dir::Log="/var/log/apt" \
   -o Dir::Bin::dpkg="/usr/bin/dpkg" \
   "\$@"
 APT_WRAPPER

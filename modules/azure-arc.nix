@@ -591,10 +591,16 @@ SSLEOF
             mkdir -p /var/opt/azcmagent/usr-share-keyrings
             mkdir -p /var/cache/apt/archives/partial
             mkdir -p /var/lib/apt/lists/partial
+            mkdir -p /var/log/apt
+
+            # MDE (mdatp) needs writable dirs for install scripts
+            mkdir -p /etc/opt/microsoft/mdatp/tmp
 
             if [ -f "$DPKG_STATUS" ]; then
-              for pkg in curl gnupg apt-transport-https libc6 ucf debianutils logrotate; do
+              for pkg in curl gnupg apt-transport-https libc6 ucf debianutils logrotate iptables; do
                 if ! grep -q "^Package: $pkg$" "$DPKG_STATUS" 2>/dev/null; then
+                  # Use a high version number so apt dependency checks pass
+                  # (e.g., azuremonitoragent Depends: libc6 (>= 2.9))
                   cat >> "$DPKG_STATUS" <<DPKG_EOF
 
 Package: $pkg
@@ -603,7 +609,7 @@ Priority: optional
 Section: utils
 Maintainer: NixOS FHS Sandbox
 Architecture: all
-Version: 1.0.0-nixos
+Version: 99.0.0-nixos
 Description: Provided by NixOS FHS sandbox
 
 DPKG_EOF
