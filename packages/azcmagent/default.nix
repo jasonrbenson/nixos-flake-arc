@@ -12,6 +12,7 @@
 , lttng-ust
 , systemd
 , libgcc
+, apt
 , agentVersion
 , agentSource
 }:
@@ -65,6 +66,10 @@ let
   # (bwrap --chdir already set CWD to the extension root via systemd's WorkingDirectory)
   execWrapper = writeShellScript "azcmagent-exec" ''
     export SYSTEMD_IGNORE_CHROOT=1
+    # Ensure /usr/bin is first in PATH so our sudo wrapper (no-PAM passthrough)
+    # is found before /run/wrappers/bin/sudo (NixOS setuid wrapper that needs PAM).
+    # Also add mdatp binary paths so 'command -v mdatp' works for MDE verification.
+    export PATH="/usr/bin:/usr/sbin:/opt/microsoft/mdatp/bin:/opt/microsoft/mdatp/sbin:$PATH"
     case "$1" in
       /var/lib/waagent/*) ;; # extension binary — keep CWD from systemd WorkingDirectory
       *) cd "$(dirname "$1")" 2>/dev/null || true ;;
@@ -107,6 +112,15 @@ let
       pkgs.dpkg
       # apt needed by MDE installer to set up Microsoft repo and install mdatp
       pkgs.apt
+      # iptables needed by mdatp (Microsoft Defender) for network filtering
+      pkgs.iptables
+      # util-linux needed by mdatp's dpkg scripts (logger, mount commands)
+      pkgs.util-linux
+      # Libraries needed by mdatp daemon (wdavdaemon)
+      pkgs.libcap       # libcap.so.2
+      pkgs.pcre2        # libpcre2-8.so.0, libpcre2-posix.so.3
+      pkgs.acl          # libacl.so.1
+      pkgs.sqlite       # libsqlite3.so.0
     ];
 
     extraBuildCommands = ''
@@ -136,11 +150,64 @@ let
       # Mount point for writable /usr/share/lintian (AMA's deb installs overrides here)
       mkdir -p $out/usr/share/lintian
 
+      # APT infrastructure for MDE package installation.
+      # The rootfs provides the skeleton; writable bind-mounts overlay these
+      # paths so MDE can add Microsoft's repo, GPG keys, and install mdatp.
+      mkdir -p $out/etc/apt/sources.list.d
+      mkdir -p $out/etc/apt/apt.conf.d
+      mkdir -p $out/etc/apt/trusted.gpg.d
+      mkdir -p $out/etc/apt/preferences.d
+      touch $out/etc/apt/sources.list
+
+      # GPG keyrings directory (MDE stores microsoft-prod.gpg here)
+      mkdir -p $out/usr/share/keyrings
+
+      # Override apt/apt-get/apt-cache with wrappers that redirect compiled-in
+      # nix store paths to standard FHS locations. Nix's apt binary hardcodes
+      # Dir::Etc to /nix/store/...-apt/etc/apt/ which is empty; we override
+      # to /etc/apt/ (bind-mounted writable from host).
+      for cmd in apt apt-get apt-cache apt-key; do
+        if [ -e "$out/usr/bin/$cmd" ]; then
+          rm -f "$out/usr/bin/$cmd"
+          tee "$out/usr/bin/$cmd" > /dev/null <<APT_WRAPPER
+#!/usr/bin/env bash
+exec ${apt}/bin/$cmd \
+  -o Dir::Etc="/etc/apt" \
+  -o Dir::State="/var/lib/apt" \
+  -o Dir::Cache="/var/cache/apt" \
+  -o Dir::Log="/var/log/apt" \
+  -o Dir::Bin::dpkg="/usr/bin/dpkg" \
+  "\$@"
+APT_WRAPPER
+          chmod 755 "$out/usr/bin/$cmd"
+        fi
+      done
+
       # State directories (/var) are NOT placed here because the bwrap
       # rootfs is read-only. Instead, the host's /var is auto-mounted
       # read-write, and systemd.tmpfiles.rules (in the NixOS module)
       # create the needed directories on the host filesystem.
       mkdir -p $out/etc/bash_completion.d
+
+      # sudo wrapper: inside bwrap, processes run as root already.
+      # Extensions use sudo (e.g. 'sudo gpg --dearmor') which fails because
+      # PAM is not configured in the sandbox. This wrapper just exec's the cmd.
+      cat > $out/usr/bin/sudo <<'SUDO_WRAPPER'
+#!/usr/bin/env bash
+# NixOS FHS sandbox: already running as root, skip PAM auth
+# Handle common sudo flags
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -E|-H|-n|-S|--preserve-env) shift ;;
+    -u) shift; shift ;;  # skip -u <user>
+    --) shift; break ;;
+    -*) shift ;;
+    *) break ;;
+  esac
+done
+exec "$@"
+SUDO_WRAPPER
+      chmod 755 $out/usr/bin/sudo
 
       # Agent needs systemctl/journalctl for service health checks.
       # targetPkgs provides systemd libs but not the binaries in PATH.
@@ -176,11 +243,14 @@ patch_extension_units() {
     grep -qE '^ExecStart=(/var/lib/waagent/|/opt/microsoft/)' "$unit" || continue
     # Skip if already wrapped
     grep -q 'azcmagent-fhs' "$unit" || {
-      # Create a temp file with patched ExecStart
+      # Create a temp file with patched ExecStart and WorkingDirectory
       while IFS= read -r line || [ -n "$line" ]; do
         case "$line" in
           ExecStart=/var/lib/waagent/*|ExecStart=/opt/microsoft/*)
             echo "ExecStart=$FHS ''${line#ExecStart=}" ;;
+          WorkingDirectory=/opt/*|WorkingDirectory=/var/lib/waagent/*)
+            # Paths inside bwrap don't exist on host; use / instead
+            echo "WorkingDirectory=/" ;;
           *)
             echo "$line" ;;
         esac
@@ -233,6 +303,10 @@ SYSTEMCTL_WRAPPER
       "--bind /var/opt/azcmagent/etc-logrotate-d /etc/logrotate.d"
       # Writable /usr/share/lintian/ — AMA's deb installs a lintian overrides file.
       "--bind /var/opt/azcmagent/usr-share-lintian /usr/share/lintian"
+      # Writable /etc/apt/ — MDE installer adds Microsoft repo and GPG keys here.
+      "--bind /var/opt/azcmagent/etc-apt /etc/apt"
+      # Writable /usr/share/keyrings/ — MDE stores microsoft-prod.gpg here.
+      "--bind /var/opt/azcmagent/usr-share-keyrings /usr/share/keyrings"
       # Extensions (e.g. KeyVault) write systemd units to /etc/systemd/system.
       # NixOS /etc/systemd/system is read-only (nix store). Redirect writes to
       # /run/systemd/system which is writable AND in systemd's unit search path,

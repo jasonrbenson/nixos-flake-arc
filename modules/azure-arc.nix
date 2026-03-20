@@ -156,6 +156,17 @@ in
     };
     users.groups.syslog = { };
 
+    # MDE (mdatp) daemon runs as the mdatp user (created by dpkg preinst).
+    # Pre-creating in NixOS because useradd fails inside read-only bwrap sandbox.
+    users.users.mdatp = {
+      isSystemUser = true;
+      group = "mdatp";
+      home = "/var/opt/microsoft/mdatp";
+      shell = "/usr/sbin/nologin";
+      description = "Microsoft Defender for Endpoint service user";
+    };
+    users.groups.mdatp = { };
+
     # State directories — himds-owned for the core agent, root for GC/extensions.
     # The ExecStartPre in himdsd fixes ownership after azcmagent connect (root).
     systemd.tmpfiles.rules = [
@@ -191,6 +202,12 @@ in
       "d /var/opt/azcmagent/etc-default 0755 root root -"
       "d /var/opt/azcmagent/etc-logrotate-d 0755 root root -"
       "d /var/opt/azcmagent/usr-share-lintian 0755 root root -"
+
+      # APT support: top-level writable directories for MDE's apt-based mdatp
+      # installation. Subdirectories are created by arc-mde-patcher (runs as root)
+      # because tmpfiles refuses to traverse the himds→root ownership boundary.
+      "d /var/opt/azcmagent/etc-apt 0755 root root -"
+      "d /var/opt/azcmagent/usr-share-keyrings 0755 root root -"
     ];
 
     # Pre-populate writable /opt overlays from the package.
@@ -345,7 +362,7 @@ in
         # Wait for himds to load config (avoids 503 race on first timer)
         ExecStartPre = "${pkgs.bash}/bin/bash -c 'for i in $(seq 1 30); do ${pkgs.curl}/bin/curl -sk https://localhost:40341/metadata/instance?api-version=2019-03-11 -H Metadata:true 2>/dev/null | ${pkgs.gnugrep}/bin/grep -q resourceGroup && exit 0; sleep 1; done; echo \"himds not ready after 30s, starting anyway\"'";
         ExecStart = "${cfg.package}/bin/azcmagent-fhs /opt/GC_Service/GC/gc_linux_service";
-        TimeoutStartSec = 5;
+        TimeoutStartSec = 45;
         Restart = "always";
         RestartSec = "10s";
         TimeoutStopSec = 600;
@@ -378,7 +395,7 @@ in
         # Wait for himds to load config (avoids 503 race on first timer)
         ExecStartPre = "${pkgs.bash}/bin/bash -c 'for i in $(seq 1 30); do ${pkgs.curl}/bin/curl -sk https://localhost:40341/metadata/instance?api-version=2019-03-11 -H Metadata:true 2>/dev/null | ${pkgs.gnugrep}/bin/grep -q resourceGroup && exit 0; sleep 1; done; echo \"himds not ready after 30s, starting anyway\"'";
         ExecStart = "${cfg.package}/bin/azcmagent-fhs /opt/GC_Ext/GC/gc_linux_service";
-        TimeoutStartSec = 5;
+        TimeoutStartSec = 45;
         Restart = "always";
         RestartSec = "10s";
         TimeoutStopSec = 600;
@@ -574,6 +591,63 @@ SSLEOF
             WAAGENT=/var/lib/waagent
             PATCHED=0
 
+            # Register MDE prerequisites in dpkg database so the installer
+            # skips 'apt install' for packages already in the FHS sandbox.
+            DPKG_STATUS=/var/opt/azcmagent/dpkg-db/status
+
+            # Ensure apt directory structure exists on host (tmpfiles can't
+            # create children under himds-owned /var/opt/azcmagent/).
+            mkdir -p /var/opt/azcmagent/etc-apt/{sources.list.d,apt.conf.d,trusted.gpg.d,preferences.d}
+            touch /var/opt/azcmagent/etc-apt/sources.list
+            mkdir -p /var/opt/azcmagent/usr-share-keyrings
+            mkdir -p /var/cache/apt/archives/partial
+            mkdir -p /var/lib/apt/lists/partial
+            mkdir -p /var/log/apt
+
+            # MDE (mdatp) needs writable dirs for install scripts
+            mkdir -p /etc/opt/microsoft/mdatp/tmp
+            mkdir -p /var/opt/microsoft/mdatp
+            mkdir -p /var/log/microsoft/mdatp
+
+            # Force dpkg to continue past script errors (e.g., postinst ln -sf to
+            # read-only /usr/bin/ fails). The mdatp binary is installed to
+            # /opt/microsoft/mdatp/ which IS writable.
+            if [ ! -f /var/opt/azcmagent/etc-apt/apt.conf.d/99force-scripts.conf ]; then
+              cat > /var/opt/azcmagent/etc-apt/apt.conf.d/99force-scripts.conf <<'APTCONF'
+Dpkg::Options { "--force-confnew"; "--force-overwrite"; };
+APTCONF
+            fi
+
+            if [ -f "$DPKG_STATUS" ]; then
+              for pkg in curl gnupg apt-transport-https libc6 ucf debianutils logrotate iptables; do
+                if ! grep -q "^Package: $pkg$" "$DPKG_STATUS" 2>/dev/null; then
+                  # Use a high version number so apt dependency checks pass
+                  # (e.g., azuremonitoragent Depends: libc6 (>= 2.9))
+                  cat >> "$DPKG_STATUS" <<DPKG_EOF
+
+Package: $pkg
+Status: install ok installed
+Priority: optional
+Section: utils
+Maintainer: NixOS FHS Sandbox
+Architecture: all
+Version: 99.0.0-nixos
+Description: Provided by NixOS FHS sandbox
+
+DPKG_EOF
+                  echo "Registered $pkg in dpkg database"
+                  PATCHED=1
+                fi
+              done
+
+              # Fix azureotelcollector half-installed state (AMA leftover)
+              if grep -q 'Status: install reinstreq half-installed' "$DPKG_STATUS" 2>/dev/null; then
+                sed -i 's/Status: install reinstreq half-installed/Status: purge ok not-installed/' "$DPKG_STATUS"
+                echo "Fixed azureotelcollector half-installed state"
+                PATCHED=1
+              fi
+            fi
+
             for mdedir in "$WAAGENT"/Microsoft.Azure.AzureDefenderForServers.MDE.Linux-*/; do
               [ -d "$mdedir" ] || continue
               INSTALLER="$mdedir/src/mde_installer.sh"
@@ -655,6 +729,65 @@ SSLEOF
                 sed -i 's|logutils.throw_and_write_log("Public settings configuration is empty")|pass  # NixOS: skip, downstream has defaults|' "$HANDLER"
                 PATCHED=1
                 echo "Patched MdeExtensionHandler.py: disabled publicSettings empty check in $mdedir"
+              fi
+            done
+
+            # Patch 5: Replace apt install mdatp with NixOS-safe install
+            # The mdatp postinst is 3000+ lines and writes to many read-only FHS paths
+            # (/usr/bin/, /lib/systemd/system/, /etc/rsyslog.d/, etc).
+            # Instead: dpkg --unpack (extract files only) + manual essential setup.
+            for mdedir in "$WAAGENT"/Microsoft.Azure.AzureDefenderForServers.MDE.Linux-*/; do
+              [ -d "$mdedir" ] || continue
+              INSTALLER="$mdedir/src/mde_installer.sh"
+              [ -f "$INSTALLER" ] || continue
+
+              if ! grep -q 'nixos_install_mdatp' "$INSTALLER"; then
+                # Define the NixOS install function near the top of the file
+                sed -i '2i\
+# --- NixOS Patch 5: custom mdatp install function ---\
+nixos_install_mdatp() {\
+    echo "[NixOS] Downloading mdatp package..."\
+    apt-get -d -y install mdatp 2>&1 || true\
+    local deb=$(find /var/cache/apt/archives -name "mdatp_*.deb" -type f | head -1)\
+    if [ -z "$deb" ]; then\
+        echo "[NixOS] ERROR: mdatp .deb not found in cache"\
+        return 1\
+    fi\
+    echo "[NixOS] Unpacking $deb (skipping postinst)..."\
+    dpkg --unpack "$deb" 2>&1 || true\
+    echo "[NixOS] Manual setup..."\
+    mkdir -p /opt/microsoft/mdatp/bin\
+    mkdir -p /var/opt/microsoft/mdatp/{definitions.noindex/00000000-0000-0000-0000-000000000000,crash,quarantine,signatures.noindex}\
+    mkdir -p /etc/opt/microsoft/mdatp/{managed,tmp}\
+    mkdir -p /var/log/microsoft/mdatp\
+    ln -sf /opt/microsoft/mdatp/sbin/wdavdaemonclient /opt/microsoft/mdatp/bin/mdatp\
+    cp /opt/microsoft/mdatp/definitions/libmpengine.so /var/opt/microsoft/mdatp/definitions.noindex/00000000-0000-0000-0000-000000000000/ 2>/dev/null || true\
+    cp /opt/microsoft/mdatp/definitions/libmpengine.so.sig /var/opt/microsoft/mdatp/definitions.noindex/00000000-0000-0000-0000-000000000000/ 2>/dev/null || true\
+    cp /opt/microsoft/mdatp/definitions/mp*.vdm /var/opt/microsoft/mdatp/definitions.noindex/00000000-0000-0000-0000-000000000000/ 2>/dev/null || true\
+    chmod 755 /opt/microsoft/mdatp/sbin/wdavdaemon /opt/microsoft/mdatp/sbin/wdavdaemonclient\
+    chown -R mdatp:mdatp /var/opt/microsoft/mdatp 2>/dev/null || true\
+    chmod -R 755 /var/opt/microsoft/mdatp\
+    cp /opt/microsoft/mdatp/conf/mdatp.service /run/systemd/system/mdatp.service\
+    sed -i "s|^WorkingDirectory=.*|WorkingDirectory=/|" /run/systemd/system/mdatp.service\
+    chmod 0644 /run/systemd/system/mdatp.service\
+    cp /opt/microsoft/mdatp/conf/mde_netfilter_v2.socket /run/systemd/system/ 2>/dev/null || true\
+    cp /opt/microsoft/mdatp/conf/mde_netfilter_v2.service /run/systemd/system/ 2>/dev/null || true\
+    sed -i "s/^Status: install ok unpacked/Status: install ok installed/" /var/lib/dpkg/status\
+    systemctl daemon-reload\
+    systemctl enable --runtime mdatp.service 2>/dev/null || true\
+    systemctl start mdatp.service 2>/dev/null || true\
+    echo "[NixOS] mdatp install complete"\
+    return 0\
+}\
+# --- End NixOS Patch 5 ---' "$INSTALLER"
+
+                # Replace all $PKG_MGR_INVOKER install mdatp lines with our function
+                sed -i 's|run_quietly "$PKG_MGR_INVOKER install mdatp$version"|nixos_install_mdatp|g' "$INSTALLER"
+                sed -i 's|run_quietly "$PKG_MGR_INVOKER -t $VERSION_NAME install mdatp$version"|nixos_install_mdatp|g' "$INSTALLER"
+                sed -i 's|run_quietly "$PKG_MGR_INVOKER -t $CHANNEL install mdatp$version"|nixos_install_mdatp|g' "$INSTALLER"
+
+                PATCHED=1
+                echo "Patched mde_installer.sh with NixOS mdatp install function in $mdedir"
               fi
             done
 
