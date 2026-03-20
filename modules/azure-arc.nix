@@ -667,14 +667,12 @@ SSLEOF
 
     # Path-based trigger: watch for MDE extension directory creation
     # This triggers instantly when the extension files appear, avoiding race with install handler
-    systemd.paths.arc-mde-patcher-watch = {
+    systemd.paths.arc-mde-patcher = {
       wantedBy = [ "multi-user.target" ];
       pathConfig = {
         PathExists = "/var/lib/waagent/Microsoft.Azure.AzureDefenderForServers.MDE.Linux-1.0.10.0/src/mde_installer.sh";
         PathChanged = "/var/lib/waagent/Microsoft.Azure.AzureDefenderForServers.MDE.Linux-1.0.10.0/src/mde_installer.sh";
       };
-      # This unit name must match the service to trigger
-      unitConfig.Unit = "arc-mde-patcher.service";
     };
 
     # Agent package + connection helper script
