@@ -362,7 +362,7 @@ in
         # Wait for himds to load config (avoids 503 race on first timer)
         ExecStartPre = "${pkgs.bash}/bin/bash -c 'for i in $(seq 1 30); do ${pkgs.curl}/bin/curl -sk https://localhost:40341/metadata/instance?api-version=2019-03-11 -H Metadata:true 2>/dev/null | ${pkgs.gnugrep}/bin/grep -q resourceGroup && exit 0; sleep 1; done; echo \"himds not ready after 30s, starting anyway\"'";
         ExecStart = "${cfg.package}/bin/azcmagent-fhs /opt/GC_Service/GC/gc_linux_service";
-        TimeoutStartSec = 5;
+        TimeoutStartSec = 45;
         Restart = "always";
         RestartSec = "10s";
         TimeoutStopSec = 600;
@@ -395,7 +395,7 @@ in
         # Wait for himds to load config (avoids 503 race on first timer)
         ExecStartPre = "${pkgs.bash}/bin/bash -c 'for i in $(seq 1 30); do ${pkgs.curl}/bin/curl -sk https://localhost:40341/metadata/instance?api-version=2019-03-11 -H Metadata:true 2>/dev/null | ${pkgs.gnugrep}/bin/grep -q resourceGroup && exit 0; sleep 1; done; echo \"himds not ready after 30s, starting anyway\"'";
         ExecStart = "${cfg.package}/bin/azcmagent-fhs /opt/GC_Ext/GC/gc_linux_service";
-        TimeoutStartSec = 5;
+        TimeoutStartSec = 45;
         Restart = "always";
         RestartSec = "10s";
         TimeoutStopSec = 600;
