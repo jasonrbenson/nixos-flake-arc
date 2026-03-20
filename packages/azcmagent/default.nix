@@ -185,6 +185,26 @@ APT_WRAPPER
       # create the needed directories on the host filesystem.
       mkdir -p $out/etc/bash_completion.d
 
+      # sudo wrapper: inside bwrap, processes run as root already.
+      # Extensions use sudo (e.g. 'sudo gpg --dearmor') which fails because
+      # PAM is not configured in the sandbox. This wrapper just exec's the cmd.
+      cat > $out/usr/bin/sudo <<'SUDO_WRAPPER'
+#!/usr/bin/env bash
+# NixOS FHS sandbox: already running as root, skip PAM auth
+# Handle common sudo flags
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -E|-H|-n|-S|--preserve-env) shift ;;
+    -u) shift; shift ;;  # skip -u <user>
+    --) shift; break ;;
+    -*) shift ;;
+    *) break ;;
+  esac
+done
+exec "$@"
+SUDO_WRAPPER
+      chmod 755 $out/usr/bin/sudo
+
       # Agent needs systemctl/journalctl for service health checks.
       # targetPkgs provides systemd libs but not the binaries in PATH.
       # The systemctl wrapper adds --runtime to enable/disable so that
