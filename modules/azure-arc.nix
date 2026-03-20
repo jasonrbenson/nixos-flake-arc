@@ -522,8 +522,9 @@ in
               # Patch 6: Guard HUtilObject._context._seq_no and .save_seq() against None
               # Without WALinuxAgent, HUtilObject is None; the else branch at enable() line ~935
               # and save_seq() at line ~966 crash with AttributeError
-              if [ -f "$AGENT_FILE" ] && grep -q 'HUtilObject\._context\._seq_no' "$AGENT_FILE"; then
-                sed -i 's/HUtilObject\._context\._seq_no/(HUtilObject._context._seq_no if HUtilObject and HUtilObject._context else "N\/A")/g' "$AGENT_FILE"
+              # Check for unpatched form: "+ HUtilObject._context._seq_no +" (not wrapped in parens)
+              if [ -f "$AGENT_FILE" ] && grep -q '"+ HUtilObject\._context\._seq_no +"' "$AGENT_FILE"; then
+                sed -i 's/"+ HUtilObject\._context\._seq_no +"/"+ (HUtilObject._context._seq_no if HUtilObject and HUtilObject._context else "N\/A") +"/g' "$AGENT_FILE"
                 PATCHED=1
                 echo "Patched agent.py HUtilObject._context._seq_no guards in $amadir"
               fi
