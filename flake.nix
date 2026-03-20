@@ -111,7 +111,9 @@
       # Complete NixOS systems for testing the Arc agent.
       #
       # Local UTM (aarch64):  nixos-rebuild switch --flake .#arc-test-vm-aarch64
-      # Azure (x86_64):       nix run github:nix-community/nixos-anywhere -- --flake .#arc-test-vm-x86_64 root@<ip>
+      # Generic x86_64:       nixos-rebuild switch --flake .#arc-test-vm-x86_64
+      # Hyper-V x86_64:       nixos-install --flake .#arc-test-hyperv-x86_64
+      # Build VHDX image:     nix build .#nixosConfigurations.arc-test-hyperv-x86_64.config.system.build.hypervImage
       # Build VM script:      nix build .#nixosConfigurations.arc-test-vm-aarch64.config.system.build.vm
       nixosConfigurations = {
         arc-test-vm-aarch64 = nixpkgs-unstable.lib.nixosSystem {
@@ -136,6 +138,24 @@
               nixpkgs.overlays = [ self.overlays.default ];
               nixpkgs.config.allowUnfree = true;
               networking.hostName = "arc-test-x86-64";
+            }
+          ];
+        };
+
+        # Hyper-V Generation 2 VM — for testing on Windows hardware
+        # Install from ISO: bash tests/hyperv-install.sh
+        # Build VHDX: nix build .#nixosConfigurations.arc-test-hyperv-x86_64.config.system.build.hypervImage
+        arc-test-hyperv-x86_64 = nixpkgs-unstable.lib.nixosSystem {
+          system = "x86_64-linux";
+          modules = [
+            # Hyper-V VHDX image builder (provides config.system.build.hypervImage)
+            "${nixpkgs-unstable}/nixos/modules/virtualisation/hyperv-image.nix"
+            self.nixosModules.azure-arc
+            ./tests/hyperv-config.nix
+            {
+              nixpkgs.overlays = [ self.overlays.default ];
+              nixpkgs.config.allowUnfree = true;
+              networking.hostName = "arc-test-hyperv";
             }
           ];
         };
