@@ -121,7 +121,15 @@ After reboot, remove the ISO from the VM's DVD drive in Hyper-V settings.
 
 1. Login: **arc-test** / **arc-test**
 2. Verify networking: `ip addr` (should have an IP from Default Switch)
-3. Verify Arc agent package: `azcmagent version`
+3. Verify Arc agent: `arc-status` (wrapper that runs azcmagent inside the FHS sandbox)
+
+> **Note**: There is no bare `azcmagent` command on the PATH. The agent runs
+> inside a bubblewrap (bwrap) FHS sandbox. Use the provided wrapper scripts:
+> - `arc-status` — shows agent connection status
+> - `arc-connect` — connects the machine to Azure Arc
+> - `azcmagent-fhs <command>` — runs any azcmagent subcommand inside the sandbox
+>
+> Example: `sudo azcmagent-fhs /opt/azcmagent/bin/azcmagent version`
 
 ## Step 6: Connect to Azure Arc
 
@@ -129,11 +137,7 @@ After reboot, remove the ISO from the VM's DVD drive in Hyper-V settings.
 # Create the service principal secret file
 echo "your-sp-secret" | sudo tee /run/secrets/arc-sp-secret
 
-# Edit the Arc configuration (update placeholder values)
-sudo nano /etc/nixos/configuration.nix
-# Or, if using the flake directly, edit tests/vm-config.nix
-
-# Connect
+# Connect (uses settings from the flake's vm-config.nix)
 sudo arc-connect
 ```
 
@@ -150,10 +154,13 @@ After Arc connects, enable extensions from the Azure portal or CLI:
 
 ```bash
 # Check agent status
-sudo /opt/azcmagent/bin/azcmagent show
+arc-status
 
 # Check extension services
 systemctl status gcad extd
+
+# Run azcmagent subcommands via the FHS wrapper
+sudo azcmagent-fhs /opt/azcmagent/bin/azcmagent show
 
 # View extension logs
 sudo journalctl -u extd -f
