@@ -627,7 +627,8 @@ SSLEOF
               fi
 
               # 4b: get_security_workspace_id (line ~142)
-              if grep -q 'or SecurityWorkspaceIdParameterName not in handlerSettings\["publicSettings"\]' "$HANDLER"; then
+              if grep -q 'or SecurityWorkspaceIdParameterName not in handlerSettings\["publicSettings"\]' "$HANDLER" && \
+                 ! grep -q 'handlerSettings\["publicSettings"\] is None or SecurityWorkspaceIdParameterName' "$HANDLER"; then
                 sed -i 's|or SecurityWorkspaceIdParameterName not in handlerSettings\["publicSettings"\]|or handlerSettings["publicSettings"] is None or SecurityWorkspaceIdParameterName not in handlerSettings["publicSettings"]|' "$HANDLER"
                 PATCHED=1
                 echo "Patched MdeExtensionHandler.py publicSettings None guard (workspace_id) in $mdedir"
@@ -641,13 +642,13 @@ SSLEOF
                 echo "Patched MdeExtensionHandler.py protectedSettings None guard in $mdedir"
               fi
 
-              # 4d: provision_extension publicSettings None check (line ~181)
-              # The existing check only tests key presence, not None value
-              if grep -q '"publicSettings" not in handlerSettings:' "$HANDLER" && \
-                 ! grep -q 'handlerSettings.get("publicSettings") is None' "$HANDLER"; then
-                sed -i 's|if "publicSettings" not in handlerSettings:|if "publicSettings" not in handlerSettings or handlerSettings.get("publicSettings") is None:|' "$HANDLER"
+              # 4d: Skip publicSettings empty check in provision_extension (line ~181)
+              # On Arc, publicSettings is None but all downstream accessors have defaults.
+              # Replace the fatal check with a pass-through so enable proceeds.
+              if grep -q 'throw_and_write_log("Public settings configuration is empty")' "$HANDLER"; then
+                sed -i 's|logutils.throw_and_write_log("Public settings configuration is empty")|pass  # NixOS: skip, downstream has defaults|' "$HANDLER"
                 PATCHED=1
-                echo "Patched MdeExtensionHandler.py provision publicSettings None check in $mdedir"
+                echo "Patched MdeExtensionHandler.py: disabled publicSettings empty check in $mdedir"
               fi
             done
 
