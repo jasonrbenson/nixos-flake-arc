@@ -606,6 +606,17 @@ SSLEOF
 
             # MDE (mdatp) needs writable dirs for install scripts
             mkdir -p /etc/opt/microsoft/mdatp/tmp
+            mkdir -p /var/opt/microsoft/mdatp
+            mkdir -p /var/log/microsoft/mdatp
+
+            # Force dpkg to continue past script errors (e.g., postinst ln -sf to
+            # read-only /usr/bin/ fails). The mdatp binary is installed to
+            # /opt/microsoft/mdatp/ which IS writable.
+            if [ ! -f /var/opt/azcmagent/etc-apt/apt.conf.d/99force-scripts.conf ]; then
+              cat > /var/opt/azcmagent/etc-apt/apt.conf.d/99force-scripts.conf <<'APTCONF'
+Dpkg::Options { "--force-confnew"; "--force-overwrite"; };
+APTCONF
+            fi
 
             if [ -f "$DPKG_STATUS" ]; then
               for pkg in curl gnupg apt-transport-https libc6 ucf debianutils logrotate iptables; do
@@ -718,6 +729,65 @@ DPKG_EOF
                 sed -i 's|logutils.throw_and_write_log("Public settings configuration is empty")|pass  # NixOS: skip, downstream has defaults|' "$HANDLER"
                 PATCHED=1
                 echo "Patched MdeExtensionHandler.py: disabled publicSettings empty check in $mdedir"
+              fi
+            done
+
+            # Patch 5: Replace apt install mdatp with NixOS-safe install
+            # The mdatp postinst is 3000+ lines and writes to many read-only FHS paths
+            # (/usr/bin/, /lib/systemd/system/, /etc/rsyslog.d/, etc).
+            # Instead: dpkg --unpack (extract files only) + manual essential setup.
+            for mdedir in "$WAAGENT"/Microsoft.Azure.AzureDefenderForServers.MDE.Linux-*/; do
+              [ -d "$mdedir" ] || continue
+              INSTALLER="$mdedir/src/mde_installer.sh"
+              [ -f "$INSTALLER" ] || continue
+
+              if ! grep -q 'nixos_install_mdatp' "$INSTALLER"; then
+                # Define the NixOS install function near the top of the file
+                sed -i '2i\
+# --- NixOS Patch 5: custom mdatp install function ---\
+nixos_install_mdatp() {\
+    echo "[NixOS] Downloading mdatp package..."\
+    apt-get -d -y install mdatp 2>&1 || true\
+    local deb=$(find /var/cache/apt/archives -name "mdatp_*.deb" -type f | head -1)\
+    if [ -z "$deb" ]; then\
+        echo "[NixOS] ERROR: mdatp .deb not found in cache"\
+        return 1\
+    fi\
+    echo "[NixOS] Unpacking $deb (skipping postinst)..."\
+    dpkg --unpack "$deb" 2>&1 || true\
+    echo "[NixOS] Manual setup..."\
+    mkdir -p /opt/microsoft/mdatp/bin\
+    mkdir -p /var/opt/microsoft/mdatp/{definitions.noindex/00000000-0000-0000-0000-000000000000,crash,quarantine,signatures.noindex}\
+    mkdir -p /etc/opt/microsoft/mdatp/{managed,tmp}\
+    mkdir -p /var/log/microsoft/mdatp\
+    ln -sf /opt/microsoft/mdatp/sbin/wdavdaemonclient /opt/microsoft/mdatp/bin/mdatp\
+    cp /opt/microsoft/mdatp/definitions/libmpengine.so /var/opt/microsoft/mdatp/definitions.noindex/00000000-0000-0000-0000-000000000000/ 2>/dev/null || true\
+    cp /opt/microsoft/mdatp/definitions/libmpengine.so.sig /var/opt/microsoft/mdatp/definitions.noindex/00000000-0000-0000-0000-000000000000/ 2>/dev/null || true\
+    cp /opt/microsoft/mdatp/definitions/mp*.vdm /var/opt/microsoft/mdatp/definitions.noindex/00000000-0000-0000-0000-000000000000/ 2>/dev/null || true\
+    chmod 755 /opt/microsoft/mdatp/sbin/wdavdaemon /opt/microsoft/mdatp/sbin/wdavdaemonclient\
+    chown -R mdatp:mdatp /var/opt/microsoft/mdatp 2>/dev/null || true\
+    chmod -R 755 /var/opt/microsoft/mdatp\
+    cp /opt/microsoft/mdatp/conf/mdatp.service /run/systemd/system/mdatp.service\
+    sed -i "s|^WorkingDirectory=.*|WorkingDirectory=/|" /run/systemd/system/mdatp.service\
+    chmod 0644 /run/systemd/system/mdatp.service\
+    cp /opt/microsoft/mdatp/conf/mde_netfilter_v2.socket /run/systemd/system/ 2>/dev/null || true\
+    cp /opt/microsoft/mdatp/conf/mde_netfilter_v2.service /run/systemd/system/ 2>/dev/null || true\
+    sed -i "s/^Status: install ok unpacked/Status: install ok installed/" /var/lib/dpkg/status\
+    systemctl daemon-reload\
+    systemctl enable --runtime mdatp.service 2>/dev/null || true\
+    systemctl start mdatp.service 2>/dev/null || true\
+    echo "[NixOS] mdatp install complete"\
+    return 0\
+}\
+# --- End NixOS Patch 5 ---' "$INSTALLER"
+
+                # Replace all $PKG_MGR_INVOKER install mdatp lines with our function
+                sed -i 's|run_quietly "$PKG_MGR_INVOKER install mdatp$version"|nixos_install_mdatp|g' "$INSTALLER"
+                sed -i 's|run_quietly "$PKG_MGR_INVOKER -t $VERSION_NAME install mdatp$version"|nixos_install_mdatp|g' "$INSTALLER"
+                sed -i 's|run_quietly "$PKG_MGR_INVOKER -t $CHANNEL install mdatp$version"|nixos_install_mdatp|g' "$INSTALLER"
+
+                PATCHED=1
+                echo "Patched mde_installer.sh with NixOS mdatp install function in $mdedir"
               fi
             done
 

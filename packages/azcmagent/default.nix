@@ -112,6 +112,11 @@ let
       pkgs.iptables
       # util-linux needed by mdatp's dpkg scripts (logger, mount commands)
       pkgs.util-linux
+      # Libraries needed by mdatp daemon (wdavdaemon)
+      pkgs.libcap       # libcap.so.2
+      pkgs.pcre2        # libpcre2-8.so.0, libpcre2-posix.so.3
+      pkgs.acl          # libacl.so.1
+      pkgs.sqlite       # libsqlite3.so.0
     ];
 
     extraBuildCommands = ''
@@ -214,11 +219,14 @@ patch_extension_units() {
     grep -qE '^ExecStart=(/var/lib/waagent/|/opt/microsoft/)' "$unit" || continue
     # Skip if already wrapped
     grep -q 'azcmagent-fhs' "$unit" || {
-      # Create a temp file with patched ExecStart
+      # Create a temp file with patched ExecStart and WorkingDirectory
       while IFS= read -r line || [ -n "$line" ]; do
         case "$line" in
           ExecStart=/var/lib/waagent/*|ExecStart=/opt/microsoft/*)
             echo "ExecStart=$FHS ''${line#ExecStart=}" ;;
+          WorkingDirectory=/opt/*|WorkingDirectory=/var/lib/waagent/*)
+            # Paths inside bwrap don't exist on host; use / instead
+            echo "WorkingDirectory=/" ;;
           *)
             echo "$line" ;;
         esac
