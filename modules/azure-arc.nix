@@ -554,6 +554,17 @@ in
                 PATCHED=1
                 echo "Patched agent.py HUtilObject.save_seq() guard in $amadir"
               fi
+              # Patch 6c: Redirect IMDS endpoint config path.
+              # AMA reads /lib/systemd/system.conf.d/azcmagent.conf for the Arc IMDS proxy.
+              # In the FHS sandbox, /lib is a symlink and that path doesn't exist.
+              # Redirect to /opt/azcmagent/datafiles/azcmagent.conf which already has the
+              # correct IMDS_ENDPOINT and IDENTITY_ENDPOINT values from the agent package.
+              if [ -f "$AGENT_FILE" ] && grep -q "/lib/systemd/system.conf.d/azcmagent.conf" "$AGENT_FILE"; then
+                sed -i "s|/lib/systemd/system.conf.d/azcmagent.conf|/opt/azcmagent/datafiles/azcmagent.conf|g" "$AGENT_FILE"
+                find "$amadir" -name 'agent*.pyc' -delete 2>/dev/null || true
+                PATCHED=1
+                echo "Patched IMDS endpoint config path in $amadir"
+              fi
             done
 
             # Patch 7: Set SSL cert paths in /etc/default/azuremonitoragent

@@ -211,16 +211,6 @@ exec "$@"
 SUDO_WRAPPER
       chmod 755 $out/usr/bin/sudo
 
-      # IMDS endpoint configuration for Arc extensions.
-      # AMA reads /lib/systemd/system.conf.d/azcmagent.conf to find the local
-      # IMDS proxy. Without this, it falls back to Azure's 169.254.169.254
-      # (which times out on non-Azure machines).
-      mkdir -p $out/lib/systemd/system.conf.d
-      cat > $out/lib/systemd/system.conf.d/azcmagent.conf <<'IMDS_CONF'
-[Manager]
-DefaultEnvironment="IDENTITY_ENDPOINT=http://localhost:40342/metadata/identity/oauth2/token" "IMDS_ENDPOINT=http://localhost:40342"
-IMDS_CONF
-
       # Python 3.13 removed the 'crypt' module (deprecated since 3.11).
       # Extensions that import it (AMA) fail with "No module named 'crypt'".
       # Provide a stub that prevents the import error.
