@@ -109,7 +109,7 @@ mkdir -p /mnt/boot
 mount /dev/sda1 /mnt/boot
 
 # 4. Install
-nixos-install --flake github:jasonrbenson/nixos-flake-arc#arc-test-hyperv-x86_64 --no-root-passwd
+nixos-install --flake github:jasonrbenson/nixos-flake-arc#arc-test-hyperv-x86_64 --no-root-passwd --no-write-lock-file
 
 # 5. Reboot
 reboot

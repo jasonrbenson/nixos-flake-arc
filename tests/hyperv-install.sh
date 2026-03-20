@@ -72,7 +72,7 @@ echo "This will download and build the system. It may take 10-30 minutes"
 echo "depending on your network speed and hardware."
 echo ""
 
-nixos-install --flake "${FLAKE_URL}#${FLAKE_CONFIG}" --no-root-passwd
+nixos-install --flake "${FLAKE_URL}#${FLAKE_CONFIG}" --no-root-passwd --no-write-lock-file
 
 echo ""
 echo "============================================="
