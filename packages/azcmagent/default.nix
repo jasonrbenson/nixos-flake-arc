@@ -116,6 +116,8 @@ let
       pkgs.iptables
       # util-linux needed by mdatp's dpkg scripts (logger, mount commands)
       pkgs.util-linux
+      # procps needed by extensions (AMA uses `ps` to check running processes)
+      pkgs.procps
       # Libraries needed by mdatp daemon (wdavdaemon)
       pkgs.libcap       # libcap.so.2
       pkgs.pcre2        # libpcre2-8.so.0, libpcre2-posix.so.3
@@ -208,6 +210,28 @@ done
 exec "$@"
 SUDO_WRAPPER
       chmod 755 $out/usr/bin/sudo
+
+      # IMDS endpoint configuration for Arc extensions.
+      # AMA reads /lib/systemd/system.conf.d/azcmagent.conf to find the local
+      # IMDS proxy. Without this, it falls back to Azure's 169.254.169.254
+      # (which times out on non-Azure machines).
+      mkdir -p $out/lib/systemd/system.conf.d
+      cat > $out/lib/systemd/system.conf.d/azcmagent.conf <<'IMDS_CONF'
+[Manager]
+DefaultEnvironment="IDENTITY_ENDPOINT=http://localhost:40342/metadata/identity/oauth2/token" "IMDS_ENDPOINT=http://localhost:40342"
+IMDS_CONF
+
+      # Python 3.13 removed the 'crypt' module (deprecated since 3.11).
+      # Extensions that import it (AMA) fail with "No module named 'crypt'".
+      # Provide a stub that prevents the import error.
+      PYTHON_SITE=$(find $out -path '*/lib/python3.*/site-packages' -type d | head -1)
+      if [ -n "$PYTHON_SITE" ]; then
+        cat > "$PYTHON_SITE/crypt.py" <<'CRYPT_STUB'
+"""Stub for removed crypt module (Python 3.13+). Extensions import this but don't use it."""
+def crypt(word, salt=None):
+    raise NotImplementedError("crypt module removed in Python 3.13")
+CRYPT_STUB
+      fi
 
       # Agent needs systemctl/journalctl for service health checks.
       # targetPkgs provides systemd libs but not the binaries in PATH.

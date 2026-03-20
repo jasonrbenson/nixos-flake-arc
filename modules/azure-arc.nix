@@ -537,11 +537,14 @@ in
               fi
 
               # Patch 6: Guard HUtilObject._context._seq_no and .save_seq() against None
-              # Without WALinuxAgent, HUtilObject is None; the else branch at enable() line ~935
-              # and save_seq() at line ~966 crash with AttributeError
-              # Check for unpatched form: "+ HUtilObject._context._seq_no +" (not wrapped in parens)
-              if [ -f "$AGENT_FILE" ] && grep -q '"+ HUtilObject\._context\._seq_no +"' "$AGENT_FILE"; then
-                sed -i 's/"+ HUtilObject\._context\._seq_no +"/"+ (HUtilObject._context._seq_no if HUtilObject and HUtilObject._context else "N\/A") +"/g' "$AGENT_FILE"
+              # Without WALinuxAgent, HUtilObject._context is None on Arc, causing
+              # AttributeError at the seq_no access. Use flexible patterns that
+              # match regardless of whitespace around + operators.
+              if [ -f "$AGENT_FILE" ] && grep -q 'HUtilObject\._context\._seq_no' "$AGENT_FILE" && \
+                 ! grep -q 'HUtilObject and HUtilObject._context' "$AGENT_FILE"; then
+                # Replace all occurrences of HUtilObject._context._seq_no with a safe accessor
+                sed -i 's/HUtilObject\._context\._seq_no/(HUtilObject._context._seq_no if HUtilObject and HUtilObject._context else "N\/A")/g' "$AGENT_FILE"
+                find "$amadir" -name 'agent*.pyc' -delete 2>/dev/null || true
                 PATCHED=1
                 echo "Patched agent.py HUtilObject._context._seq_no guards in $amadir"
               fi
@@ -553,7 +556,7 @@ in
               fi
             done
 
-            # Patch 4: Set SSL cert paths in /etc/default/azuremonitoragent
+            # Patch 7: Set SSL cert paths in /etc/default/azuremonitoragent
             # AMA needs these to make TLS connections; NixOS stores certs at /etc/ssl/certs/
             AMA_DEFAULT="/var/opt/azcmagent/etc-default/azuremonitoragent"
             if [ -d "/var/opt/azcmagent/etc-default" ] && ! grep -q 'SSL_CERT_DIR=/etc/ssl/certs' "$AMA_DEFAULT" 2>/dev/null; then
@@ -565,7 +568,23 @@ SSLEOF
               echo "Set SSL cert paths in $AMA_DEFAULT"
             fi
 
-            [ "$PATCHED" = "1" ] && echo "AMA patches applied" || echo "No AMA patches needed"
+            # Auto-retry: If we applied patches and the extension is in a failed state,
+            # reset the state file so the extension manager will retry the enable.
+            if [ "$PATCHED" = "1" ]; then
+              for statefile in /var/lib/GuestConfig/extension_logs/Microsoft.Azure.Monitor.AzureMonitorLinuxAgent-*/state.json; do
+                [ -f "$statefile" ] || continue
+                if grep -q '"ExtensionState":"INSTALLED"' "$statefile" && grep -q '"ErrorMsg"' "$statefile"; then
+                  # Reset SequenceNumberFinished to allow re-enable
+                  sed -i 's/"SequenceNumberFinished":[0-9-]*/"SequenceNumberFinished":-1/' "$statefile"
+                  # Clear the error to unblock
+                  sed -i 's/"EnableEndTelemetrySent":true/"EnableEndTelemetrySent":false/' "$statefile"
+                  echo "Reset AMA state file for retry: $statefile"
+                fi
+              done
+              echo "AMA patches applied — extension should retry on next poll"
+            else
+              echo "No AMA patches needed"
+            fi
           '';
         in patchScript;
       };
