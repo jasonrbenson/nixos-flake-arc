@@ -772,6 +772,18 @@ DPKG_EOF
               [ -f "$INSTALLER" ] || continue
 
               if ! grep -q 'nixos_install_mdatp' "$INSTALLER"; then
+                NEED_PATCH5=1
+              elif grep -q 'dpkg --unpack' "$INSTALLER"; then
+                # Upgrade: old patcher used dpkg --unpack which fails on x86_64
+                # Remove old function so we can re-inject with dpkg-deb -x
+                sed -i '/# --- NixOS Patch 5:/,/# --- End NixOS Patch 5 ---/d' "$INSTALLER"
+                NEED_PATCH5=1
+                echo "Upgrading MDE install function (dpkg --unpack -> dpkg-deb -x) in $mdedir"
+              else
+                NEED_PATCH5=0
+              fi
+
+              if [ "$NEED_PATCH5" = "1" ]; then
                 # Define the NixOS install function near the top of the file
                 sed -i '2i\
 # --- NixOS Patch 5: custom mdatp install function ---\
@@ -783,8 +795,12 @@ nixos_install_mdatp() {\
         echo "[NixOS] ERROR: mdatp .deb not found in cache"\
         return 1\
     fi\
-    echo "[NixOS] Unpacking $deb (skipping postinst)..."\
-    dpkg --unpack "$deb" 2>&1 || true\
+    echo "[NixOS] Extracting $deb (bypassing preinst/postinst scripts)..."\
+    dpkg-deb -x "$deb" / 2>&1\
+    if [ ! -f /opt/microsoft/mdatp/sbin/wdavdaemon ]; then\
+        echo "[NixOS] ERROR: dpkg-deb extraction failed — wdavdaemon not found"\
+        return 1\
+    fi\
     echo "[NixOS] Manual setup..."\
     mkdir -p /opt/microsoft/mdatp/bin\
     mkdir -p /var/opt/microsoft/mdatp/{definitions.noindex/00000000-0000-0000-0000-000000000000,crash,quarantine,signatures.noindex}\
@@ -802,7 +818,22 @@ nixos_install_mdatp() {\
     chmod 0644 /run/systemd/system/mdatp.service\
     cp /opt/microsoft/mdatp/conf/mde_netfilter_v2.socket /run/systemd/system/ 2>/dev/null || true\
     cp /opt/microsoft/mdatp/conf/mde_netfilter_v2.service /run/systemd/system/ 2>/dev/null || true\
-    sed -i "s/^Status: install ok unpacked/Status: install ok installed/" /var/lib/dpkg/status\
+    local mdatp_ver=$(dpkg-deb -f "$deb" Version 2>/dev/null || echo "0.0.0")\
+    if ! grep -q "^Package: mdatp$" /var/lib/dpkg/status 2>/dev/null; then\
+        cat >> /var/lib/dpkg/status <<MDATP_REG\
+\
+Package: mdatp\
+Status: install ok installed\
+Priority: optional\
+Section: utils\
+Maintainer: Microsoft Corporation\
+Architecture: amd64\
+Version: $mdatp_ver\
+Description: Microsoft Defender for Endpoint\
+\
+MDATP_REG\
+        echo "[NixOS] Registered mdatp $mdatp_ver in dpkg status"\
+    fi\
     systemctl daemon-reload\
     systemctl enable --runtime mdatp.service 2>/dev/null || true\
     systemctl start mdatp.service 2>/dev/null || true\
