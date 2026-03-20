@@ -42,9 +42,6 @@
   # Dynamic disk growth on first boot
   boot.growPartition = true;
 
-  # VHDX image size (used by hyperv-image.nix module)
-  virtualisation.diskSize = 20 * 1024; # 20 GB
-
   # NTP — ensure clock stays synced (critical for Azure Arc JWT auth)
   services.timesyncd.enable = true;
 

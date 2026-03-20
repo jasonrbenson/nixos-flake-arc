@@ -144,12 +144,9 @@
 
         # Hyper-V Generation 2 VM — for testing on Windows hardware
         # Install from ISO: bash tests/hyperv-install.sh
-        # Build VHDX: nix build .#nixosConfigurations.arc-test-hyperv-x86_64.config.system.build.hypervImage
         arc-test-hyperv-x86_64 = nixpkgs-unstable.lib.nixosSystem {
           system = "x86_64-linux";
           modules = [
-            # Hyper-V VHDX image builder (provides config.system.build.hypervImage)
-            "${nixpkgs-unstable}/nixos/modules/virtualisation/hyperv-image.nix"
             self.nixosModules.azure-arc
             ./tests/hyperv-config.nix
             {
