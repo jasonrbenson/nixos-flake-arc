@@ -12,6 +12,7 @@
 , lttng-ust
 , systemd
 , libgcc
+, apt
 , agentVersion
 , agentSource
 }:
@@ -147,6 +148,26 @@ let
 
       # GPG keyrings directory (MDE stores microsoft-prod.gpg here)
       mkdir -p $out/usr/share/keyrings
+
+      # Override apt/apt-get/apt-cache with wrappers that redirect compiled-in
+      # nix store paths to standard FHS locations. Nix's apt binary hardcodes
+      # Dir::Etc to /nix/store/...-apt/etc/apt/ which is empty; we override
+      # to /etc/apt/ (bind-mounted writable from host).
+      for cmd in apt apt-get apt-cache apt-key; do
+        if [ -e "$out/usr/bin/$cmd" ]; then
+          rm -f "$out/usr/bin/$cmd"
+          tee "$out/usr/bin/$cmd" > /dev/null <<APT_WRAPPER
+#!/usr/bin/env bash
+exec ${apt}/bin/$cmd \
+  -o Dir::Etc="/etc/apt" \
+  -o Dir::State="/var/lib/apt" \
+  -o Dir::Cache="/var/cache/apt" \
+  -o Dir::Bin::dpkg="/usr/bin/dpkg" \
+  "\$@"
+APT_WRAPPER
+          chmod 755 "$out/usr/bin/$cmd"
+        fi
+      done
 
       # State directories (/var) are NOT placed here because the bwrap
       # rootfs is read-only. Instead, the host's /var is auto-mounted
