@@ -771,7 +771,7 @@ DPKG_EOF
               INSTALLER="$mdedir/src/mde_installer.sh"
               [ -f "$INSTALLER" ] || continue
 
-              if ! grep -q 'nixos_install_mdatp' "$INSTALLER"; then
+              if ! grep -q '# --- NixOS Patch 5:' "$INSTALLER"; then
                 NEED_PATCH5=1
               elif grep -q 'dpkg --unpack' "$INSTALLER"; then
                 # Upgrade: old patcher used dpkg --unpack which fails on x86_64
@@ -779,6 +779,11 @@ DPKG_EOF
                 sed -i '/# --- NixOS Patch 5:/,/# --- End NixOS Patch 5 ---/d' "$INSTALLER"
                 NEED_PATCH5=1
                 echo "Upgrading MDE install function (dpkg --unpack -> dpkg-deb -x) in $mdedir"
+              elif ! grep -q 'Waiting for mdatp daemon' "$INSTALLER"; then
+                # Upgrade: add daemon readiness wait loop
+                sed -i '/# --- NixOS Patch 5:/,/# --- End NixOS Patch 5 ---/d' "$INSTALLER"
+                NEED_PATCH5=1
+                echo "Upgrading MDE install function (adding daemon readiness wait) in $mdedir"
               else
                 NEED_PATCH5=0
               fi
