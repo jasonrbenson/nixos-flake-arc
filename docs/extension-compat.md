@@ -18,7 +18,7 @@ Testing performed on aarch64 NixOS 26.05, agent v1.61, AzureUSGovernment (usgovv
 | MDE | Microsoft.Azure.AzureDefenderForServers | MDE.Linux | 1.0.10.0 | Python/Bash | ⏳ **Patched** | 7 runtime patches: distro detection, repo mapping, SSL certs, debug mode, 4× Python None guards. Reaches apt package installation step. |
 | Key Vault | Microsoft.Azure.KeyVault | KeyVaultForLinux | 3.5.3041.185 | Go binary (amd64+arm64) | ✅ **Full Success** | Ships both amd64 and arm64 binaries. Install/enable handlers succeed. Extension service binary (`akvvm_service`) auto-wrapped to run in FHS sandbox. Status file and logs written correctly. Service reports `"observedCertificates cannot be empty"` — a config issue (no certs configured), not a platform issue. |
 | ChangeTracking | Microsoft.Azure.ChangeTrackingAndInventory | ChangeTracking-Linux | 2.35.0.0 | Go binary (amd64 only) | ❌ **Arch Mismatch** | Ships only x86_64 binaries (`cta_linux_handler`, .deb, .rpm). Fails with `Exec format error` on aarch64. **Not a NixOS issue** — Microsoft doesn't ship arm64 binaries. Would need testing on x86_64 hardware. |
-| Guest Configuration | Microsoft.GuestConfiguration | ConfigurationforLinux | — | Go binary | ✅ **Working** | Pulls assignments from Azure GAS, validates GPG signatures, runs compliance checks (AzureLinuxBaseline tested), sends heartbeats. Requires `gc.config` with `{"ServiceType": "GCArc"}` — see [Gap 10](gaps-and-findings.md#gap-10-guest-configuration-agent-servicetype-configuration--resolved). Logs to `arc_policy_logs/gc_agent.log` in GCArc mode. |
+| Guest Configuration | Microsoft.GuestConfiguration | ConfigurationforLinux | — | Go binary | ✅ **Working** | gcad fully operational: pulls assignments from Azure GAS, validates GPG, spawns worker processes, runs DSC consistency checks, sends heartbeats and compliance reports to Azure. AzureLinuxBaseline policy reports NonCompliant because `libOsConfigResource.so` is x86_64-only (arch mismatch on aarch64 test VM, not NixOS-related). See [Gap 14](gaps-and-findings.md#gap-14-azurelinuxbaseline-dsc-resource--aarch64-only). |
 | DSCForLinux | Microsoft.OSTCExtensions | DSCForLinux | — | — | ⛔ **Unavailable** | Not available in USGov Virginia (cloud/region limitation, not NixOS-related). |
 
 ## Extension Handler Types
@@ -98,10 +98,21 @@ The full extension delivery pipeline has been validated on NixOS:
   binary now runs inside the FHS sandbox.
 - Service exits 1 due to empty `observedCertificates` — a config issue, not a platform issue
 
-### Guest Configuration (gcad)
+### Guest Configuration (gcad) — ✅ Fully Working
 - ✅ Fully working on Arc-connected machines with `gc.config` ServiceType set to `"GCArc"`
-- Pulls policy assignments from Azure GAS, validates GPG signatures, runs compliance checks
-- Logs to `arc_policy_logs/gc_agent.log` (not `gc_agent_logs/`) in GCArc mode
+- ✅ Pulls AzureLinuxBaseline policy assignment from Azure GAS
+- ✅ GPG validates downloaded packages
+- ✅ Worker processes spawn and execute DSC consistency checks
+- ✅ MSI token acquisition via himds (localhost:40341)
+- ✅ Compliance reports sent to Azure (visible in GAS API)
+- ✅ Assignment heartbeats sent every 30 minutes
+- ✅ Consistency timer runs every 60 minutes
+- **AzureLinuxBaseline reports NonCompliant** — `libOsConfigResource.so` is x86_64-only,
+  fails on aarch64 with "Native resources are currently not supported on Linux aarch64"
+  This is an Azure policy resource limitation, not a NixOS or gcad issue.
+- Minor non-fatal warnings: missing `/etc/opt/omi/conf/dsc/configuration/MetaConfig.mof`
+  and `/etc/opt/microsoft/omsagent` (legacy OMS/OMI paths not present on NixOS, harmless)
+- Logs to `arc_policy_logs/gc_agent.log` and `gc_worker.log` in GCArc mode
 
 ### Azure Update Manager
 - Fundamentally incompatible with NixOS's declarative update model

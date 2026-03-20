@@ -8,7 +8,7 @@ known gaps, root causes, and recommendations for the Azure Arc Product Group.
 Testing was performed on an aarch64 NixOS 26.05 VM running in UTM on macOS, connected to
 Azure Arc in AzureUSGovernment (usgovvirginia).
 
-**Date**: 2026-03-20 (updated — Gaps 9, 10, 11 resolved; Gap 12 added; AMA & MDE patched)
+**Date**: 2026-03-20 (updated — Gaps 9-11, 13 resolved; Gaps 12, 14 arch limitations; AMA & MDE patched)
 **Agent Version**: 1.61.03319.859
 **Architecture**: aarch64-linux
 
@@ -358,6 +358,37 @@ minimal or no NixOS-specific patches needed.
 
 **Recommendation to Product Group**: Ship arm64 (aarch64) binaries for ChangeTracking.
 KeyVault already demonstrates multi-arch binary shipping for the same extension pipeline.
+
+### Gap 14: AzureLinuxBaseline DSC Resource — aarch64 Only
+
+**Severity**: Low — architecture limitation of the policy resource, not NixOS or gcad
+**Component**: Guest Configuration (gcad) → AzureLinuxBaseline policy assignment
+**Error**: `Native resources are currently not supported on Linux aarch64.`
+
+**Root Cause**: The AzureLinuxBaseline policy ships a native DSC resource library
+(`libOsConfigResource.so`) that is compiled for x86_64 only. The GC DSC engine correctly
+detects the architecture mismatch and refuses to load it on aarch64.
+
+**What works**:
+- gcad service: active, running timers (60min consistency, 30min heartbeat) ✅
+- Assignment pull from Azure GAS ✅
+- GPG package validation ✅
+- Worker process spawning and DSC engine initialization ✅
+- MSI token acquisition via himds (localhost:40341) ✅
+- Compliance report sent to Azure (reports NonCompliant) ✅
+- Assignment heartbeat sent successfully ✅
+
+**What doesn't work**:
+- The actual compliance check fails because `libOsConfigResource.so` can't be loaded
+- All OsConfigResource rules (sshd_config permissions, logging, CIS benchmarks etc.)
+  are skipped with "test operation failed"
+
+**Note**: This is NOT a NixOS issue or a gcad issue. The gcad framework is fully
+operational. A custom policy with a shell-based or cross-platform DSC resource would
+work correctly. The limitation is specific to policies using native x86_64 .so files.
+
+**Recommendation to Product Group**: Ship arm64 `libOsConfigResource.so` for
+AzureLinuxBaseline, or provide a fallback mechanism for non-x86_64 platforms.
 
 ---
 
