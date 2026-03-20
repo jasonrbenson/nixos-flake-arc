@@ -66,6 +66,9 @@ let
   # (bwrap --chdir already set CWD to the extension root via systemd's WorkingDirectory)
   execWrapper = writeShellScript "azcmagent-exec" ''
     export SYSTEMD_IGNORE_CHROOT=1
+    # Ensure /usr/bin is first in PATH so our sudo wrapper (no-PAM passthrough)
+    # is found before /run/wrappers/bin/sudo (NixOS setuid wrapper that needs PAM)
+    export PATH="/usr/bin:/usr/sbin:$PATH"
     case "$1" in
       /var/lib/waagent/*) ;; # extension binary — keep CWD from systemd WorkingDirectory
       *) cd "$(dirname "$1")" 2>/dev/null || true ;;
