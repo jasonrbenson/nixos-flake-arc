@@ -60,10 +60,15 @@ let
   # Passthrough wrapper: exec whatever command is passed as arguments.
   # This lets systemd services and users run arbitrary binaries inside the
   # FHS namespace, e.g.  azcmagent-fhs /opt/azcmagent/bin/himds
-  # cd to the binary's directory first so RPATH "." resolves co-located .so files
+  # For agent binaries: cd to binary's dir so RPATH "." resolves co-located .so files
+  # For extension binaries (/var/lib/waagent/...): preserve systemd WorkingDirectory
+  # (bwrap --chdir already set CWD to the extension root via systemd's WorkingDirectory)
   execWrapper = writeShellScript "azcmagent-exec" ''
     export SYSTEMD_IGNORE_CHROOT=1
-    cd "$(dirname "$1")" 2>/dev/null || true
+    case "$1" in
+      /var/lib/waagent/*) ;; # extension binary — keep CWD from systemd WorkingDirectory
+      *) cd "$(dirname "$1")" 2>/dev/null || true ;;
+    esac
     exec "$@"
   '';
 

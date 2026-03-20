@@ -295,12 +295,43 @@ The framework is generic — any extension that creates a systemd unit with bina
 - Unit file automatically patched:
   `ExecStart=/run/current-system/sw/bin/azcmagent-fhs /var/lib/waagent/.../arm64/akvvm_service`
 - Binary runs through FHS sandbox successfully
+- Status file written and reported to Azure ✅
 - Service exits 1 due to empty `observedCertificates` — a config issue, not a platform issue
 
 **Previous partial fix** (now superseded):
 - `/etc/systemd/system` inside bwrap is symlinked to `/run/systemd/system` (host-writable)
 - `systemctl` wrapper adds `--runtime` to enable/disable (writes to `/run/systemd/system/`)
 - Install script completes successfully (daemon-reload finds unit, enable creates symlink)
+
+### Gap 13: Extension Binary CWD Mismatch — ✅ RESOLVED
+
+**Severity**: ~~Medium~~ → Resolved
+**Extension**: Key Vault for Linux (KeyVaultForLinux) v3.5.3041.185
+
+**Root Cause**: The FHS exec wrapper script did `cd "$(dirname "$1")"` for all binaries.
+For extension binaries in architecture subdirectories (e.g., `arm64/akvvm_service`), this
+set the working directory to `arm64/` instead of the extension root. The binary couldn't
+find `./HandlerEnvironment.json` (which lives in the extension root), causing:
+- No status file written → Azure showed "Creating" indefinitely
+- No log files created → silent failure
+- Service crash-loops with exit 1 (no output)
+
+**Symptoms**:
+- Azure portal showed "Creating" with "No status file created yet" for days
+- Service journal showed rapid crash-loop: `Main process exited, code=exited, status=1/FAILURE`
+- Only discoverable via strace (which ran slower and happened to work due to different CWD)
+
+**Fix**: Updated the exec wrapper to skip the `cd dirname($1)` for extension binaries
+(`/var/lib/waagent/*`). These binaries rely on systemd's `WorkingDirectory` (set by the
+extension's install script), which bwrap preserves via `--chdir "$(pwd)"`. Core agent
+binaries (`/opt/azcmagent/bin/*`) still get the `cd` for RPATH "." resolution.
+
+**Result after fix**:
+- `akvvm_service` reads `HandlerEnvironment.json` successfully ✅
+- Writes `0.status` with proper error message ✅
+- Azure portal updated from "Creating" to "Failed" with actual error: `"observedCertificates cannot be empty"` ✅
+- Log files created in extension_logs directory ✅
+- The remaining failure is purely a config issue (no certificates configured), not a platform issue
 
 ### Gap 12: ChangeTracking Extension — No ARM64 Binaries
 
