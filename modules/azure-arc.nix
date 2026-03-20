@@ -562,6 +562,68 @@ SSLEOF
       };
     };
 
+    # MDE extension patcher — patches mde_installer.sh for NixOS compatibility
+    systemd.services.arc-mde-patcher = {
+      description = "Patch MDE extension for NixOS compatibility";
+      after = [ "extd.service" ];
+      path = [ pkgs.gnused pkgs.gnugrep pkgs.coreutils pkgs.findutils ];
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = let
+          patchScript = pkgs.writeShellScript "arc-mde-patch" ''
+            WAAGENT=/var/lib/waagent
+            PATCHED=0
+
+            for mdedir in "$WAAGENT"/Microsoft.Azure.AzureDefenderForServers.MDE.Linux-*/; do
+              [ -d "$mdedir" ] || continue
+              INSTALLER="$mdedir/src/mde_installer.sh"
+              [ -f "$INSTALLER" ] || continue
+
+              # Patch 1: Add nixos to distro family detection
+              # Map nixos to debian family (we have dpkg/apt in the FHS sandbox)
+              if grep -q '"unsupported distro \$DISTRO \$VERSION"' "$INSTALLER" && \
+                 ! grep -q 'DISTRO_FAMILY="debian" # nixos' "$INSTALLER"; then
+                sed -i '/elif \[ "\$DISTRO" = "sles" \]/i\    elif [ "$DISTRO" = "nixos" ]; then\n        DISTRO_FAMILY="debian" # nixos' "$INSTALLER"
+                PATCHED=1
+                echo "Patched mde_installer.sh distro detection in $mdedir"
+              fi
+
+              # Patch 2: Map nixos to ubuntu for PMC repo URL
+              # The installer fetches packages from packages.microsoft.com/config/$DISTRO/$VERSION
+              # NixOS doesn't have a repo there, so we use ubuntu/24.04 (closest match)
+              if ! grep -q 'DISTRO="ubuntu" # nixos' "$INSTALLER"; then
+                sed -i '/DISTRO_FAMILY="debian" # nixos/a\        DISTRO="ubuntu" # nixos\n        SCALED_VERSION="24.04" # nixos\n        VERSION="24.04" # nixos' "$INSTALLER"
+                PATCHED=1
+                echo "Patched mde_installer.sh nixos->ubuntu repo mapping in $mdedir"
+              fi
+            done
+
+            # Patch 3: Set SSL_CERT_FILE for MDE Python wrapper
+            # The MdeInstallerWrapper.py uses urllib which needs SSL certs
+            WRAPPER_RUNNER="$WAAGENT"/Microsoft.Azure.AzureDefenderForServers.MDE.Linux-*/PythonRunner.sh
+            for runner in $WRAPPER_RUNNER; do
+              [ -f "$runner" ] || continue
+              if ! grep -q 'SSL_CERT_FILE' "$runner"; then
+                sed -i '2i export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt\nexport SSL_CERT_DIR=/etc/ssl/certs' "$runner"
+                PATCHED=1
+                echo "Patched PythonRunner.sh SSL cert paths in $(dirname "$runner")"
+              fi
+            done
+
+            [ "$PATCHED" = "1" ] && echo "MDE patches applied" || echo "No MDE patches needed"
+          '';
+        in patchScript;
+      };
+    };
+
+    systemd.timers.arc-mde-patcher = {
+      wantedBy = [ "timers.target" ];
+      timerConfig = {
+        OnBootSec = "30s";
+        OnUnitActiveSec = "30s";
+      };
+    };
+
     # Agent package + connection helper script
     environment.systemPackages = [
       cfg.package
