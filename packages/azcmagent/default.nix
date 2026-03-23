@@ -116,6 +116,8 @@ let
       pkgs.iptables
       # util-linux needed by mdatp's dpkg scripts (logger, mount commands)
       pkgs.util-linux
+      # procps needed by extensions (AMA uses `ps` to check running processes)
+      pkgs.procps
       # Libraries needed by mdatp daemon (wdavdaemon)
       pkgs.libcap       # libcap.so.2
       pkgs.pcre2        # libpcre2-8.so.0, libpcre2-posix.so.3
@@ -208,6 +210,12 @@ done
 exec "$@"
 SUDO_WRAPPER
       chmod 755 $out/usr/bin/sudo
+
+      # Note: Python 3.13 removed the 'crypt' module. AMA logs a non-fatal
+      # "No module named 'crypt'" warning, but it doesn't prevent operation.
+      # The FHS rootfs site-packages is a read-only nix store symlink, so
+      # creating a stub there isn't possible during build. The warning is safe
+      # to ignore — AMA uses crypt only for WALinuxAgent compat on Azure VMs.
 
       # Agent needs systemctl/journalctl for service health checks.
       # targetPkgs provides systemd libs but not the binaries in PATH.

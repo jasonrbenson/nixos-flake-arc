@@ -4,9 +4,10 @@ NixOS flake for running the Azure Arc Connected Machine Agent (`azcmagent`) on N
 
 ## Status
 
-🟢 **Working PoC** — The core agent, extension framework, and 4 of 6 tested extensions
-are functional on NixOS. Machine connects to Azure Arc, heartbeats, processes extension
-deployments, and reports compliance. Runtime patchers handle distro-specific incompatibilities
+🟢 **Working PoC** — The core agent, extension framework, and 5 of 7 tested extensions
+are functional on NixOS across both aarch64 and x86_64. Machine connects to Azure Arc,
+heartbeats, processes extension deployments, and reports compliance. MDE reports
+`healthy: true, licensed: true`. Runtime patchers handle distro-specific incompatibilities
 automatically. This is an interim proof-of-concept to demonstrate feasibility to the
 Azure Arc Product Group and provide a blueprint for native NixOS support.
 
@@ -84,11 +85,11 @@ sudo arc-connect
 | Architecture | Status |
 |---|---|
 | aarch64-linux | ✅ Working (tested on NixOS 26.05 in UTM/QEMU) |
-| x86_64-linux | 🔄 Untested (package builds, needs VM validation) |
+| x86_64-linux | ✅ Working (tested on NixOS 26.05 in Hyper-V Gen2) |
 
 ## Extension Compatibility
 
-Tested on aarch64 NixOS 26.05, Azure Arc agent v1.61, AzureUSGovernment.
+Tested on both aarch64 and x86_64 NixOS 26.05, Azure Arc agent v1.61, AzureUSGovernment.
 
 | Extension | Status | Notes |
 |---|---|---|
@@ -96,8 +97,8 @@ Tested on aarch64 NixOS 26.05, Azure Arc agent v1.61, AzureUSGovernment.
 | **AMA** v1.40.0 | ✅ Working | Runtime patcher bypasses distro allowlist; 3 services running |
 | **Key Vault** v3.5.3041.185 | ✅ Working | Auto-wrapped via extension service framework. Config-only issue (empty `observedCertificates`) |
 | **Guest Configuration** | ✅ Working | Pulls assignments, runs DSC checks, sends compliance reports to Azure |
-| **MDE** v1.0.10.0 | ⏳ Patched | 7 runtime patches applied; reaches package installation step |
-| **ChangeTracking** v2.35.0.0 | ❌ Arch | Ships x86_64-only binaries — Microsoft limitation, not NixOS |
+| **MDE** v1.0.10.0 | ✅ Working | 12 runtime patches; `healthy: true, licensed: true` on both architectures |
+| **ChangeTracking** v2.35.0.0 | ❌ Blocked | Compiled Go binary explicitly rejects NixOS — requires Microsoft fix |
 | **DSCForLinux** | — | Not available in USGov region (cloud limitation) |
 
 The extension delivery pipeline (download → GPG validate → unzip → execute) works fully.
@@ -112,7 +113,8 @@ NixOS-specific patches:
 
 - **arc-ama-patcher** — Patches AMA's distro allowlist and installer to support NixOS
 - **arc-mde-patcher** — Patches MDE's distro detection, SSL certs, Python handler,
-  and forces use of bundled installer script
+  dpkg-deb extraction, daemon readiness wait, and forces use of bundled installer script.
+  Self-upgrades outdated patches when newer versions are deployed.
 
 These run every 10 seconds and are idempotent — they detect already-patched files and
 skip them.

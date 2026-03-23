@@ -537,11 +537,14 @@ in
               fi
 
               # Patch 6: Guard HUtilObject._context._seq_no and .save_seq() against None
-              # Without WALinuxAgent, HUtilObject is None; the else branch at enable() line ~935
-              # and save_seq() at line ~966 crash with AttributeError
-              # Check for unpatched form: "+ HUtilObject._context._seq_no +" (not wrapped in parens)
-              if [ -f "$AGENT_FILE" ] && grep -q '"+ HUtilObject\._context\._seq_no +"' "$AGENT_FILE"; then
-                sed -i 's/"+ HUtilObject\._context\._seq_no +"/"+ (HUtilObject._context._seq_no if HUtilObject and HUtilObject._context else "N\/A") +"/g' "$AGENT_FILE"
+              # Without WALinuxAgent, HUtilObject._context is None on Arc, causing
+              # AttributeError at the seq_no access. Use flexible patterns that
+              # match regardless of whitespace around + operators.
+              if [ -f "$AGENT_FILE" ] && grep -q 'HUtilObject\._context\._seq_no' "$AGENT_FILE" && \
+                 ! grep -q 'HUtilObject and HUtilObject._context' "$AGENT_FILE"; then
+                # Replace all occurrences of HUtilObject._context._seq_no with a safe accessor
+                sed -i 's/HUtilObject\._context\._seq_no/(HUtilObject._context._seq_no if HUtilObject and HUtilObject._context else "N\/A")/g' "$AGENT_FILE"
+                find "$amadir" -name 'agent*.pyc' -delete 2>/dev/null || true
                 PATCHED=1
                 echo "Patched agent.py HUtilObject._context._seq_no guards in $amadir"
               fi
@@ -551,9 +554,20 @@ in
                 PATCHED=1
                 echo "Patched agent.py HUtilObject.save_seq() guard in $amadir"
               fi
+              # Patch 6c: Redirect IMDS endpoint config path.
+              # AMA reads /lib/systemd/system.conf.d/azcmagent.conf for the Arc IMDS proxy.
+              # In the FHS sandbox, /lib is a symlink and that path doesn't exist.
+              # Redirect to /opt/azcmagent/datafiles/azcmagent.conf which already has the
+              # correct IMDS_ENDPOINT and IDENTITY_ENDPOINT values from the agent package.
+              if [ -f "$AGENT_FILE" ] && grep -q "/lib/systemd/system.conf.d/azcmagent.conf" "$AGENT_FILE"; then
+                sed -i "s|/lib/systemd/system.conf.d/azcmagent.conf|/opt/azcmagent/datafiles/azcmagent.conf|g" "$AGENT_FILE"
+                find "$amadir" -name 'agent*.pyc' -delete 2>/dev/null || true
+                PATCHED=1
+                echo "Patched IMDS endpoint config path in $amadir"
+              fi
             done
 
-            # Patch 4: Set SSL cert paths in /etc/default/azuremonitoragent
+            # Patch 7: Set SSL cert paths in /etc/default/azuremonitoragent
             # AMA needs these to make TLS connections; NixOS stores certs at /etc/ssl/certs/
             AMA_DEFAULT="/var/opt/azcmagent/etc-default/azuremonitoragent"
             if [ -d "/var/opt/azcmagent/etc-default" ] && ! grep -q 'SSL_CERT_DIR=/etc/ssl/certs' "$AMA_DEFAULT" 2>/dev/null; then
@@ -565,7 +579,23 @@ SSLEOF
               echo "Set SSL cert paths in $AMA_DEFAULT"
             fi
 
-            [ "$PATCHED" = "1" ] && echo "AMA patches applied" || echo "No AMA patches needed"
+            # Auto-retry: If we applied patches and the extension is in a failed state,
+            # reset the state file so the extension manager will retry the enable.
+            if [ "$PATCHED" = "1" ]; then
+              for statefile in /var/lib/GuestConfig/extension_logs/Microsoft.Azure.Monitor.AzureMonitorLinuxAgent-*/state.json; do
+                [ -f "$statefile" ] || continue
+                if grep -q '"ExtensionState":"INSTALLED"' "$statefile" && grep -q '"ErrorMsg"' "$statefile"; then
+                  # Reset SequenceNumberFinished to allow re-enable
+                  sed -i 's/"SequenceNumberFinished":[0-9-]*/"SequenceNumberFinished":-1/' "$statefile"
+                  # Clear the error to unblock
+                  sed -i 's/"EnableEndTelemetrySent":true/"EnableEndTelemetrySent":false/' "$statefile"
+                  echo "Reset AMA state file for retry: $statefile"
+                fi
+              done
+              echo "AMA patches applied — extension should retry on next poll"
+            else
+              echo "No AMA patches needed"
+            fi
           '';
         in patchScript;
       };
@@ -741,7 +771,24 @@ DPKG_EOF
               INSTALLER="$mdedir/src/mde_installer.sh"
               [ -f "$INSTALLER" ] || continue
 
-              if ! grep -q 'nixos_install_mdatp' "$INSTALLER"; then
+              if ! grep -q '# --- NixOS Patch 5:' "$INSTALLER"; then
+                NEED_PATCH5=1
+              elif grep -q 'dpkg --unpack' "$INSTALLER"; then
+                # Upgrade: old patcher used dpkg --unpack which fails on x86_64
+                # Remove old function so we can re-inject with dpkg-deb -x
+                sed -i '/# --- NixOS Patch 5:/,/# --- End NixOS Patch 5 ---/d' "$INSTALLER"
+                NEED_PATCH5=1
+                echo "Upgrading MDE install function (dpkg --unpack -> dpkg-deb -x) in $mdedir"
+              elif ! grep -q 'Waiting for mdatp daemon' "$INSTALLER"; then
+                # Upgrade: add daemon readiness wait loop
+                sed -i '/# --- NixOS Patch 5:/,/# --- End NixOS Patch 5 ---/d' "$INSTALLER"
+                NEED_PATCH5=1
+                echo "Upgrading MDE install function (adding daemon readiness wait) in $mdedir"
+              else
+                NEED_PATCH5=0
+              fi
+
+              if [ "$NEED_PATCH5" = "1" ]; then
                 # Define the NixOS install function near the top of the file
                 sed -i '2i\
 # --- NixOS Patch 5: custom mdatp install function ---\
@@ -753,8 +800,13 @@ nixos_install_mdatp() {\
         echo "[NixOS] ERROR: mdatp .deb not found in cache"\
         return 1\
     fi\
-    echo "[NixOS] Unpacking $deb (skipping postinst)..."\
-    dpkg --unpack "$deb" 2>&1 || true\
+    echo "[NixOS] Extracting $deb (bypassing preinst/postinst scripts)..."\
+    dpkg-deb -x "$deb" / 2>&1 || true\
+    if [ ! -f /opt/microsoft/mdatp/sbin/wdavdaemon ]; then\
+        echo "[NixOS] ERROR: dpkg-deb extraction failed — wdavdaemon not found"\
+        return 1\
+    fi\
+    echo "[NixOS] Extraction verified — wdavdaemon present"\
     echo "[NixOS] Manual setup..."\
     mkdir -p /opt/microsoft/mdatp/bin\
     mkdir -p /var/opt/microsoft/mdatp/{definitions.noindex/00000000-0000-0000-0000-000000000000,crash,quarantine,signatures.noindex}\
@@ -772,10 +824,43 @@ nixos_install_mdatp() {\
     chmod 0644 /run/systemd/system/mdatp.service\
     cp /opt/microsoft/mdatp/conf/mde_netfilter_v2.socket /run/systemd/system/ 2>/dev/null || true\
     cp /opt/microsoft/mdatp/conf/mde_netfilter_v2.service /run/systemd/system/ 2>/dev/null || true\
-    sed -i "s/^Status: install ok unpacked/Status: install ok installed/" /var/lib/dpkg/status\
+    local mdatp_ver=$(dpkg-deb -f "$deb" Version 2>/dev/null || echo "0.0.0")\
+    if grep -q "^Package: mdatp$" /var/lib/dpkg/status 2>/dev/null; then\
+        sed -i "/^Package: mdatp$/,/^$/s/^Status:.*/Status: install ok installed/" /var/lib/dpkg/status\
+        sed -i "/^Package: mdatp$/,/^$/s/^Version:.*/Version: $mdatp_ver/" /var/lib/dpkg/status\
+        echo "[NixOS] Updated mdatp dpkg status to installed ($mdatp_ver)"\
+    else\
+        cat >> /var/lib/dpkg/status <<MDATP_REG\
+\
+Package: mdatp\
+Status: install ok installed\
+Priority: optional\
+Section: utils\
+Maintainer: Microsoft Corporation\
+Architecture: amd64\
+Version: $mdatp_ver\
+Description: Microsoft Defender for Endpoint\
+\
+MDATP_REG\
+        echo "[NixOS] Registered mdatp $mdatp_ver in dpkg status"\
+    fi\
     systemctl daemon-reload\
     systemctl enable --runtime mdatp.service 2>/dev/null || true\
     systemctl start mdatp.service 2>/dev/null || true\
+    echo "[NixOS] Waiting for mdatp daemon to start..."\
+    local ready=0\
+    for i in $(seq 1 30); do\
+        if mdatp health > /dev/null 2>&1; then\
+            ready=1\
+            break\
+        fi\
+        sleep 2\
+    done\
+    if [ "$ready" = "1" ]; then\
+        echo "[NixOS] mdatp daemon is ready"\
+    else\
+        echo "[NixOS] mdatp daemon not ready yet (may need more time)"\
+    fi\
     echo "[NixOS] mdatp install complete"\
     return 0\
 }\

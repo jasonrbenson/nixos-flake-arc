@@ -9,15 +9,17 @@ runs inside the FHS bubblewrap sandbox.
 
 ## Tested Extensions
 
-Testing performed on aarch64 NixOS 26.05, agent v1.61, AzureUSGovernment (usgovvirginia).
+Testing performed on two architectures:
+- **aarch64**: NixOS 26.05 in UTM/QEMU, agent v1.61, AzureUSGovernment (usgovvirginia)
+- **x86_64**: NixOS 26.05 in Hyper-V Gen2, agent v1.61, AzureUSGovernment (usgovvirginia)
 
 | Extension | Publisher | Type | Version | Handler | Result | Details |
 |---|---|---|---|---|---|---|
 | Custom Script | Microsoft.Azure.Extensions | CustomScript | 2.1.14 | Go binary (arm64) | ✅ **Full Success** | Native Go binary, no OS checks. Ran commands and returned output to Azure. |
 | AMA | Microsoft.Azure.Monitor | AzureMonitorLinuxAgent | 1.40.0 | Python/Shell | ✅ **Working** (patched) | Runtime patcher bypasses distro allowlist, adds NixOS to supported distros. 3 AMA services running (mdsd, amacoreagent, mdsdhelper). |
-| MDE | Microsoft.Azure.AzureDefenderForServers | MDE.Linux | 1.0.10.0 | Python/Bash | ✅ **Working** (patched) | 12 runtime patches: distro detection, repo mapping, SSL certs, debug mode, 4× Python None guards, apt infrastructure, dpkg registration, sudo wrapper, custom dpkg install (skip postinst). mdatp daemon running, engine loaded, definitions updating. Needs Defender for Cloud onboarding blob for full license. |
+| MDE | Microsoft.Azure.AzureDefenderForServers | MDE.Linux | 1.0.10.0 | Python/Bash | ✅ **Working** (patched) | 12 runtime patches: distro detection, repo mapping, SSL certs, debug mode, 4× Python None guards, apt infrastructure, dpkg registration, sudo wrapper, custom dpkg-deb install (bypass preinst/postinst). mdatp `healthy: true, licensed: true` on both aarch64 and x86_64. Engine loaded, definitions current, real-time protection active. |
 | Key Vault | Microsoft.Azure.KeyVault | KeyVaultForLinux | 3.5.3041.185 | Go binary (amd64+arm64) | ✅ **Full Success** | Ships both amd64 and arm64 binaries. Install/enable handlers succeed. Extension service binary (`akvvm_service`) auto-wrapped to run in FHS sandbox. Status file and logs written correctly. Service reports `"observedCertificates cannot be empty"` — a config issue (no certs configured), not a platform issue. |
-| ChangeTracking | Microsoft.Azure.ChangeTrackingAndInventory | ChangeTracking-Linux | 2.35.0.0 | Go binary (amd64 only) | ❌ **Arch Mismatch** | Ships only x86_64 binaries (`cta_linux_handler`, .deb, .rpm). Fails with `Exec format error` on aarch64. **Not a NixOS issue** — Microsoft doesn't ship arm64 binaries. Would need testing on x86_64 hardware. |
+| ChangeTracking | Microsoft.Azure.ChangeTrackingAndInventory | ChangeTracking-Linux | 2.35.0.0 | Go binary (amd64 only) | ❌ **Failed** | aarch64: `Exec format error` (no arm64 binary). x86_64: Go binary explicitly rejects NixOS — reads `/etc/os-release`, compares `ID` against hardcoded allowlist, exits with `"unsupported Linux distro 'nixos'"`. DI container panics for unknown distros. **Cannot be patched** — compiled Go binary. Requires Microsoft fix. |
 | Guest Configuration | Microsoft.GuestConfiguration | ConfigurationforLinux | — | Go binary | ✅ **Working** | gcad fully operational: pulls assignments from Azure GAS, validates GPG, spawns worker processes, runs DSC consistency checks, sends heartbeats and compliance reports to Azure. AzureLinuxBaseline policy reports NonCompliant because `libOsConfigResource.so` is x86_64-only (arch mismatch on aarch64 test VM, not NixOS-related). See [Gap 14](gaps-and-findings.md#gap-14-azurelinuxbaseline-dsc-resource--aarch64-only). |
 | DSCForLinux | Microsoft.OSTCExtensions | DSCForLinux | — | — | ⛔ **Unavailable** | Not available in USGov Virginia (cloud/region limitation, not NixOS-related). |
 
@@ -63,28 +65,37 @@ The full extension delivery pipeline has been validated on NixOS:
 - All 3 AMA services running: mdsd, amacoreagent, mdsdhelper
 - Recommendation to PG: Add NixOS to the allowlist natively
 
-### MDE (Microsoft Defender for Endpoint) — ⏳ Patched, Testing
-- **7 runtime patches** applied via `arc-mde-patcher` systemd timer (10s interval):
+### MDE (Microsoft Defender for Endpoint) — ✅ Fully Working (Both Architectures)
+- **12 runtime patches** applied via `arc-mde-patcher` systemd timer (10s interval):
   1. Distro detection: maps `nixos` → `debian` family in `mde_installer.sh`
   2. Repo URL mapping: maps nixos to `ubuntu/24.04` for PMC packages
   3. SSL certs + debug mode: exports SSL_CERT_FILE, SSL_CERT_DIR, MdeExtensionDebugMode=true
   4a-4d. Python None guards: fixes TypeError in publicSettings/protectedSettings handling
+  5. NixOS install function: `dpkg-deb -x` extraction (bypasses preinst/postinst), manual setup,
+     dpkg status registration, 60-second daemon readiness wait
+  6-12. FHS sandbox: apt wrappers, fake dpkg status, sudo wrapper, mdatp libs, PATH, WorkingDirectory fix, mdatp user
+- **x86_64-specific fixes**: `dpkg --unpack` fails silently on x86_64 (preinst exits non-zero,
+  dpkg skips extraction). Replaced with `dpkg-deb -x` + tar error suppression + dpkg status
+  update for existing entries + daemon readiness retry loop.
 - **Key finding**: MDE downloads newer scripts from GitHub at runtime, bypassing patches.
   Fixed by setting `MdeExtensionDebugMode=true` which forces use of bundled (patched) script.
 - **Key finding**: `install.status` lock file prevents re-enable for 36 minutes after first attempt.
-- MDE installer reaches package installation step and needs `apt` for prerequisites.
-- `pkgs.apt` added to FHS sandbox for MDE package installation.
-- Additional blocker expected: mdatp .deb package installation and service startup
+- **Patcher self-upgrades**: detects outdated patches (old `dpkg --unpack`, missing daemon wait)
+  and replaces with current versions automatically.
+- **Result**: `mdatp health` → `healthy: true, licensed: true` on both architectures.
 
-### ChangeTracking — ❌ Architecture Mismatch (Not NixOS-Related)
-- **Not a NixOS issue** — the ChangeTracking extension ships only x86_64 binaries:
-  - `cta_linux_handler`: ELF x86_64 Go binary
-  - `change-tracking-retail_0.1.03151.216-1_amd64.deb`
-  - `change_tracking_retail-0.1.03151.216-1.x86_64.rpm`
-- Fails with `Exec format error` (exit 126) on our aarch64 test VM
-- Unlike KeyVault (which ships both amd64 and arm64 binaries), ChangeTracking has no arm64 support
-- **Requires x86_64 hardware to test NixOS compatibility**
-- Recommendation to PG: Ship arm64 binaries for ChangeTracking extension
+### ChangeTracking — ❌ Rejects NixOS (Requires Microsoft Fix)
+- **aarch64**: Ships only x86_64 binaries — `Exec format error` on arm64
+- **x86_64**: Go binary (`cta_linux_handler`) **explicitly rejects NixOS**:
+  - Reads `/etc/os-release`, extracts `ID=nixos`
+  - Compares against hardcoded internal distro allowlist
+  - Exits with `"unsupported Linux distro 'nixos'"`
+  - Go DI container panics in `InitApplicationContext()` for unknown distros
+- **Cannot be patched**: Unlike AMA/MDE (Python/bash scripts), this is a compiled 8MB Go binary.
+  No sed/text-based workaround is possible. Options: `LD_PRELOAD`, fake os-release (risky), or
+  Microsoft adding NixOS to the allowlist.
+- **Recommendation**: Microsoft should add NixOS to the allowlist AND fix the DI container to
+  handle unknown distros gracefully instead of panicking.
 
 ### Key Vault (KeyVaultForLinux)
 - ✅ Extension install and enable handlers both succeed (exit code 0)
