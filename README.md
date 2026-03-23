@@ -136,6 +136,8 @@ nix flake check
 
 ## Documentation
 
+- **[Arc PG NixOS Integration Guide](docs/arc-pg-nixos-integration-guide.md)** — Technical guide for the Azure Arc engineering team
+- **[Arc PG Executive Brief](docs/arc-pg-executive-brief.md)** — Summary call-to-action with phased roadmap
 - **[Production Deployment Guide](docs/production-guide.md)** — End-to-end setup for NixOS admins and Azure engineers
 - [Architecture](docs/architecture.md) — Technical design of the FHS sandbox approach
 - [Gaps and Findings](docs/gaps-and-findings.md) — Current gaps, root causes, and recommendations
